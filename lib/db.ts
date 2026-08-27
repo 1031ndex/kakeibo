@@ -82,12 +82,12 @@ export async function fetchUnclassified(): Promise<Tx[]> {
   return data as Tx[];
 }
 
-export async function fetchBudgets(): Promise<Budget[]> {
+/** 表示中の月に有効な予算を取る（current_date ではなくその月で判定する） */
+export async function fetchBudgets(month: Date): Promise<Budget[]> {
   const { data, error } = await supabase
-    .from('v_current_budgets')
-    .select('category_id,name,owner,kind,is_variable,pocket_kind,monthly_amount');
+    .rpc('fn_budgets', { target_month: iso(monthStart(month)) });
   if (error) throw error;
-  return data as Budget[];
+  return (data ?? []) as Budget[];
 }
 
 /** 年初からの貯蓄実績と、その年の目標合計 */
