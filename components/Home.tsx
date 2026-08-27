@@ -23,7 +23,7 @@ export default function Home({ onGoInbox, pending }: { onGoInbox: () => void; pe
         await generateFixed(month);
         const [t, b, s] = await Promise.all([
           fetchMonthTx(month),
-          fetchBudgets(),
+          fetchBudgets(month),
           fetchSavings(month.getFullYear()),
         ]);
         if (!alive) return;
@@ -51,7 +51,7 @@ export default function Home({ onGoInbox, pending }: { onGoInbox: () => void; pe
 
   // 支出合計（貯蓄は含めない。未分類は支出として数える）
   const spent = txs
-    .filter((t) => t.type === '支出' && t.category_kind !== '貯蓄')
+    .filter((t) => t.type === '支出')
     .reduce((s, t) => s + t.amount, 0);
 
   const savingRate = savings.target > 0
@@ -168,7 +168,8 @@ export function Row({ tx, onClick }: { tx: Tx; onClick?: () => void }) {
         <span className="row-name">{tx.merchant || tx.category_name || '（名称なし）'}</span>
         <span className="row-cat">
           {tx.category_name ?? <span className="tag">未分類</span>}
-          {tx.payer !== '共通' && ` ・ ${tx.payer}が立替`}
+          {tx.payer !== '共通' && tx.type === '支出' && tx.source !== 'fixed' && ` ・ ${tx.payer}が立替`}
+          {tx.type === '収入' && ` ・ ${tx.payer}`}
           {tx.is_refund && ' ・ 返金'}
         </span>
       </span>
