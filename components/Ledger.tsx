@@ -30,7 +30,7 @@ export default function Ledger() {
     setMonth((m) => new Date(m.getFullYear(), m.getMonth() + n, 1));
 
   const total = txs
-    .filter((t) => t.type === '支出' && t.category_kind !== '貯蓄')
+    .filter((t) => t.type === '支出')
     .reduce((s, t) => s + t.amount, 0);
 
   return (
