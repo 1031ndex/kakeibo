@@ -4,17 +4,18 @@ import { useEffect, useState, useCallback } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import Login from '@/components/Login';
-import Home from '@/components/Home';
+import Calendar from '@/components/Calendar';
 import Inbox from '@/components/Inbox';
-import Ledger from '@/components/Ledger';
+import Savings from '@/components/Savings';
+import Settings from '@/components/Settings';
 import { fetchUnclassified } from '@/lib/db';
 
-type Tab = 'home' | 'inbox' | 'ledger';
+type Tab = 'calendar' | 'inbox' | 'savings' | 'settings';
 
 export default function Page() {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
-  const [tab, setTab] = useState<Tab>('home');
+  const [tab, setTab] = useState<Tab>('calendar');
   const [pending, setPending] = useState(0);
 
   useEffect(() => {
@@ -28,9 +29,7 @@ export default function Page() {
 
   const refreshPending = useCallback(() => {
     if (!session) return;
-    fetchUnclassified()
-      .then((rows) => setPending(rows.length))
-      .catch(() => setPending(0));
+    fetchUnclassified().then((r) => setPending(r.length)).catch(() => setPending(0));
   }, [session]);
 
   useEffect(() => { refreshPending(); }, [refreshPending, tab]);
@@ -41,21 +40,25 @@ export default function Page() {
   return (
     <>
       <div className="app">
-        {tab === 'home' && <Home onGoInbox={() => setTab('inbox')} pending={pending} />}
+        {tab === 'calendar' && <Calendar />}
         {tab === 'inbox' && <Inbox onDone={refreshPending} />}
-        {tab === 'ledger' && <Ledger />}
+        {tab === 'savings' && <Savings />}
+        {tab === 'settings' && <Settings />}
       </div>
 
       <nav className="tabbar">
-        <button data-on={tab === 'home'} onClick={() => setTab('home')}>
-          <span className="tab-mark" />ホーム
+        <button data-on={tab === 'calendar'} onClick={() => setTab('calendar')}>
+          <span className="tab-mark" />カレンダー
         </button>
         <button data-on={tab === 'inbox'} onClick={() => setTab('inbox')}>
           <span className="tab-mark" />未分類
           {pending > 0 && <span className="tab-badge num">{pending}</span>}
         </button>
-        <button data-on={tab === 'ledger'} onClick={() => setTab('ledger')}>
-          <span className="tab-mark" />明細
+        <button data-on={tab === 'savings'} onClick={() => setTab('savings')}>
+          <span className="tab-mark" />貯蓄
+        </button>
+        <button data-on={tab === 'settings'} onClick={() => setTab('settings')}>
+          <span className="tab-mark" />設定
         </button>
       </nav>
     </>

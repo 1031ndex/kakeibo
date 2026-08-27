@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import {
-  fetchUnclassified, fetchCategories, classify, learnRule,
+  ACCOUNT, fetchUnclassified, fetchCategories, classify, learnRule,
   yen, type Tx, type Category,
 } from '@/lib/db';
 
@@ -18,7 +18,7 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
       try {
         const [q, c] = await Promise.all([fetchUnclassified(), fetchCategories()]);
         setQueue(q);
-        setCats(c.filter((x) => x.kind !== '収入'));
+        setCats(c.filter((x) => x.account_id === ACCOUNT.RESONA && x.kind === '支出'));
       } catch (e: any) {
         setError(e.message ?? '読み込めませんでした');
       } finally {
@@ -32,7 +32,7 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
   async function pick(cat: Category) {
     if (!current) return;
     try {
-      await classify(current.id, cat.id, cat.pocket_id);
+      await classify(current.id, cat.id);
       if (learn && current.merchant) await learnRule(current.merchant, cat.id);
       setQueue((q) => q.slice(1));
       onDone();
@@ -49,13 +49,11 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
         <header className="topbar"><h1>未分類</h1></header>
         <div className="empty">
           <strong>すべて振り分けました</strong>
-          新しい明細が届いたらここに並びます
+          デビットを使うとここに並びます
         </div>
       </>
     );
   }
-
-  const d = new Date(current.occurred_at);
 
   return (
     <>
@@ -69,7 +67,7 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
       <div className="slip">
         <div className="slip-store">{current.merchant || '（店名なし）'}</div>
         <div className="slip-meta num">
-          {d.getFullYear()}/{d.getMonth() + 1}/{d.getDate()} {String(d.getHours()).padStart(2, '0')}:{String(d.getMinutes()).padStart(2, '0')}
+          {current.occurred_on.replace(/-/g, '/')}
           {current.is_refund && '　返金'}
         </div>
         <div className="slip-amount num" style={current.amount < 0 ? { color: 'var(--midori)' } : undefined}>

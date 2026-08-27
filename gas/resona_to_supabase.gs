@@ -26,7 +26,7 @@
 // ===== 設定 =====
 const LABEL_DONE   = '家計簿/取込済';
 const SENDER       = 'debit.resonabank.co.jp';
-const POCKET_LIVING = 1;   // pockets.id = 1（生活費）
+const ACCOUNT_RESONA = 1;  // accounts.id = 1（共通りそな）
 const BATCH_SIZE   = 50;
 
 // ===== 初回セットアップ =====
@@ -77,13 +77,13 @@ function importResona() {
       }
 
       rows.push({
-        occurred_at: parsed.occurredAt,
+        occurred_on: parsed.occurredOn,
+        account_id: ACCOUNT_RESONA,
         type: '支出',
         category_id: matchCategory_(parsed.store, rules),
         merchant: parsed.store,
         amount: isRefund ? -parsed.amount : parsed.amount,
         payer: '共通',
-        pocket_id: POCKET_LIVING,
         gmail_message_id: msg.getId(),
         approval_no: parsed.approvalNo,
         is_refund: isRefund,
@@ -115,26 +115,20 @@ function parseMail_(body, receivedAt, isRefund) {
   const dateM  = body.match(/ご利用日時[：:]\s*(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{1,2}:\d{2})/);
   const storeM = body.match(/ご利用加盟店名[^：:]*[：:]\s*(.+)/);
 
-  let occurredAt;
+  let occurredOn;
   if (dateM && !isRefund) {
-    const d = dateM[1].replace(/\//g, '-').replace(/-(\d)(?!\d)/g, '-0$1');
-    occurredAt = d + 'T' + padTime_(dateM[2]) + ':00+09:00';
+    occurredOn = dateM[1].replace(/\//g, '-').replace(/-(\d)(?!\d)/g, '-0$1');
   } else {
-    // 返金メールには日時がないため受信日時を使う
-    occurredAt = Utilities.formatDate(receivedAt, 'Asia/Tokyo', "yyyy-MM-dd'T'HH:mm:ssXXX");
+    // 返金メールには日時がないため受信日を使う
+    occurredOn = Utilities.formatDate(receivedAt, 'Asia/Tokyo', 'yyyy-MM-dd');
   }
 
   return {
-    occurredAt: occurredAt,
+    occurredOn: occurredOn,
     amount: Number(amountM[1].replace(/,/g, '')),
     approvalNo: approvalM[1].trim(),
     store: storeM ? storeM[1].trim() : ''
   };
-}
-
-function padTime_(hm) {
-  const p = hm.split(':');
-  return ('0' + p[0]).slice(-2) + ':' + ('0' + p[1]).slice(-2);
 }
 
 // ===== カテゴリ推定 =====

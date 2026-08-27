@@ -192,3 +192,106 @@ input, select { font-family: inherit; font-size: 16px; }
 }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ============================================================
+   カレンダー
+   ============================================================ */
+.cal {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+.cal-week {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  border-bottom: 1px solid var(--rule);
+}
+.cal-week:last-child { border-bottom: none; }
+.cal-head { background: var(--ai-bg); }
+.cal-head span {
+  text-align: center;
+  font-size: 11px;
+  padding: 6px 0;
+  color: var(--ink-2);
+  letter-spacing: 0.06em;
+}
+.cal-head span[data-sun="true"] { color: var(--shu); }
+.cal-head span[data-sat="true"] { color: var(--ai); }
+
+.cal-day {
+  border: none;
+  background: none;
+  border-right: 1px solid var(--rule);
+  min-height: 58px;
+  padding: 4px 3px 5px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+.cal-day:last-child { border-right: none; }
+.cal-day[data-out="true"] { background: rgba(0,0,0,0.02); }
+.cal-day[data-on="true"] { background: var(--ai-bg); }
+.cal-num { font-size: 12px; color: var(--ink); font-family: var(--mono); }
+.cal-day[data-out="true"] .cal-num { color: var(--ink-3); }
+.cal-day[data-today="true"] .cal-num {
+  background: var(--ai); color: #fff;
+  border-radius: 50%; width: 20px; height: 20px;
+  display: grid; place-items: center;
+}
+.cal-out { font-size: 10px; font-family: var(--mono); color: var(--shu); line-height: 1.25; }
+.cal-in  { font-size: 10px; font-family: var(--mono); color: var(--ai); line-height: 1.25; }
+
+.totals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-top: none;
+  border-radius: 0 0 10px 10px;
+  margin-top: -11px;
+  position: relative;
+}
+.totals > div { padding: 10px 6px; text-align: center; border-right: 1px solid var(--rule); }
+.totals > div:last-child { border-right: none; }
+.totals dt { font-size: 10px; color: var(--ink-3); letter-spacing: 0.06em; margin: 0 0 2px; }
+.totals dd { margin: 0; font-size: 15px; font-weight: 600; font-family: var(--mono); }
+.totals dd[data-tone="in"]  { color: var(--ai); }
+.totals dd[data-tone="out"] { color: var(--shu); }
+
+.daybar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 20px 0 8px;
+}
+.daybar h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.daybar button {
+  border: 1px solid var(--rule); background: var(--card); color: var(--ai);
+  border-radius: 8px; padding: 6px 12px; font-size: 13px;
+}
+
+.balance-card {
+  background: var(--ai); color: #fff;
+  border-radius: 10px; padding: 16px;
+  margin-top: 14px;
+}
+.balance-card .figure-label { color: rgba(255,255,255,0.75); }
+.balance-card .figure-value { color: #fff; }
+.balance-card .figure-sub { color: rgba(255,255,255,0.7); }
+
+.seg { display: flex; gap: 6px; margin-top: 14px; }
+.seg button {
+  flex: 1; border: 1px solid var(--rule); background: var(--card);
+  border-radius: 8px; padding: 9px 0; font-size: 13px; color: var(--ink-2);
+}
+.seg button[data-on="true"] { background: var(--ai); border-color: var(--ai); color: #fff; }
+
+.list-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 11px 14px; border-bottom: 1px solid var(--rule); gap: 12px;
+}
+.list-row:last-child { border-bottom: none; }
+.list-row .name { font-size: 14px; }
+.list-row .sub { font-size: 11px; color: var(--ink-3); }
