@@ -51,6 +51,14 @@ function importResona() {
   const label = GmailApp.getUserLabelByName(LABEL_DONE);
   if (!label) throw new Error('先に setup() を実行してください');
 
+  // アプリの設定タブで取込を止められる
+  const conf = fetchSettings_(url, key);
+  if (conf.import_enabled === 'false') {
+    Logger.log('取込は設定でオフになっています');
+    return;
+  }
+  const importFrom = conf.import_from || '1970-01-01';
+
   const rules = fetchRules_(url, key);
   const threads = GmailApp.search(
     'from:(' + SENDER + ') -label:"' + LABEL_DONE + '"', 0, BATCH_SIZE);
@@ -65,6 +73,12 @@ function importResona() {
       const body = msg.getPlainBody() || '';
       const isRefund = /入金取引/.test(subject);
       const parsed = parseMail_(body, msg.getDate(), isRefund);
+
+      // 運用開始前のメールは取り込まない
+      if (parsed && parsed.occurredOn < importFrom) {
+        thread.addLabel(label);
+        return;
+      }
 
       if (!parsed) {
         errors.push({
@@ -129,6 +143,18 @@ function parseMail_(body, receivedAt, isRefund) {
     approvalNo: approvalM[1].trim(),
     store: storeM ? storeM[1].trim() : ''
   };
+}
+
+// ===== 設定の取得 =====
+function fetchSettings_(url, key) {
+  const res = UrlFetchApp.fetch(url + '/rest/v1/settings?select=key,value', {
+    headers: { apikey: key, Authorization: 'Bearer ' + key },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) return {};
+  const out = {};
+  JSON.parse(res.getContentText()).forEach(function (r) { out[r.key] = r.value; });
+  return out;
 }
 
 // ===== カテゴリ推定 =====

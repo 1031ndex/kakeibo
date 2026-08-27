@@ -222,3 +222,58 @@ export async function removeRule(id: number) {
   const { error } = await supabase.from('merchant_rules').delete().eq('id', id);
   if (error) throw error;
 }
+
+/* ---------- 設定 ---------- */
+export async function fetchSettings(): Promise<Record<string, string>> {
+  const { data, error } = await supabase.from('settings').select('key,value');
+  if (error) throw error;
+  const o: Record<string, string> = {};
+  for (const r of data ?? []) o[(r as any).key] = (r as any).value;
+  return o;
+}
+
+export async function setSetting(key: string, value: string) {
+  const { error } = await supabase.rpc('fn_set_setting', { k: key, v: value });
+  if (error) throw error;
+}
+
+/* ---------- 固定収支の編集 ---------- */
+export async function updateFixed(id: number, patch: { name?: string; amount?: number; day_of_month?: number }) {
+  const { error } = await supabase.from('fixed_entries').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+/** 計上日や金額を変えたあと、その月の記帳を作り直す */
+export async function regenerateMonth(fixedId: number, month: Date) {
+  const { error } = await supabase
+    .from('transactions')
+    .delete()
+    .eq('fixed_entry_id', fixedId)
+    .eq('period_month', iso(monthStart(month)));
+  if (error) throw error;
+  await generateFixed(month);
+}
+
+/* ---------- 精算 ---------- */
+export type Settlement = {
+  user_name: Owner;
+  base_amount: number;
+  advanced: number;
+  to_pay: number;
+};
+
+export async function fetchSettlement(month: Date): Promise<Settlement[]> {
+  const { data, error } = await supabase.rpc('fn_settlement', { target_month: iso(monthStart(month)) });
+  if (error) throw error;
+  return (data ?? []) as Settlement[];
+}
+
+/* ---------- グラフ ---------- */
+export async function fetchTrend(accountId: number, monthsBack = 12) {
+  const { data, error } = await supabase.rpc('fn_monthly_trend', {
+    target_account: accountId,
+    months_back: monthsBack,
+  });
+  if (error) throw error;
+  return (data ?? []) as { month: string; income: number; outgo: number }[];
+}

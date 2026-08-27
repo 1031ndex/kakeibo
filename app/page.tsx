@@ -7,10 +7,11 @@ import Login from '@/components/Login';
 import Calendar from '@/components/Calendar';
 import Inbox from '@/components/Inbox';
 import Savings from '@/components/Savings';
+import Chart from '@/components/Chart';
 import Settings from '@/components/Settings';
 import { fetchUnclassified } from '@/lib/db';
 
-type Tab = 'calendar' | 'inbox' | 'savings' | 'settings';
+type Tab = 'calendar' | 'inbox' | 'savings' | 'chart' | 'settings';
 
 export default function Page() {
   const [session, setSession] = useState<Session | null>(null);
@@ -43,6 +44,7 @@ export default function Page() {
         {tab === 'calendar' && <Calendar />}
         {tab === 'inbox' && <Inbox onDone={refreshPending} />}
         {tab === 'savings' && <Savings />}
+        {tab === 'chart' && <Chart />}
         {tab === 'settings' && <Settings />}
       </div>
 
@@ -56,6 +58,9 @@ export default function Page() {
         </button>
         <button data-on={tab === 'savings'} onClick={() => setTab('savings')}>
           <span className="tab-mark" />貯蓄
+        </button>
+        <button data-on={tab === 'chart'} onClick={() => setTab('chart')}>
+          <span className="tab-mark" />グラフ
         </button>
         <button data-on={tab === 'settings'} onClick={() => setTab('settings')}>
           <span className="tab-mark" />設定

@@ -3,22 +3,26 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
-  fetchBudgets, changeBudget, fetchFixedEntries, changeFixedAmount,
-  fetchRules, removeRule, monthLabel, yen, type Budget,
+  fetchBudgets, changeBudget, fetchFixedEntries, updateFixed, regenerateMonth,
+  fetchRules, removeRule, fetchSettings, setSetting, yen, type Budget,
 } from '@/lib/db';
 
 export default function Settings() {
-  const [tab, setTab] = useState<'budget' | 'fixed' | 'rules'>('budget');
+  const [tab, setTab] = useState<'budget' | 'fixed' | 'rules' | 'import'>('budget');
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [fixed, setFixed] = useState<any[]>([]);
   const [rules, setRules] = useState<any[]>([]);
   const [editing, setEditing] = useState<Budget | null>(null);
+  const [editingFixed, setEditingFixed] = useState<any | null>(null);
+  const [conf, setConf] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
     try {
-      const [b, f, r] = await Promise.all([fetchBudgets(new Date()), fetchFixedEntries(), fetchRules()]);
-      setBudgets(b); setFixed(f); setRules(r); setError('');
+      const [b, f, r, c] = await Promise.all([
+        fetchBudgets(new Date()), fetchFixedEntries(), fetchRules(), fetchSettings(),
+      ]);
+      setBudgets(b); setFixed(f); setRules(r); setConf(c); setError('');
     } catch (e: any) {
       setError(e.message ?? '読み込めませんでした');
     }
@@ -36,6 +40,7 @@ export default function Settings() {
         <button data-on={tab === 'budget'} onClick={() => setTab('budget')}>予算</button>
         <button data-on={tab === 'fixed'} onClick={() => setTab('fixed')}>固定収支</button>
         <button data-on={tab === 'rules'} onClick={() => setTab('rules')}>店名ルール</button>
+        <button data-on={tab === 'import'} onClick={() => setTab('import')}>取込</button>
       </div>
 
       {tab === 'budget' && (
@@ -65,18 +70,19 @@ export default function Settings() {
           <p className="eyebrow">毎月このタイミングで自動計上されます</p>
           <div className="ledger">
             {fixed.map((f) => (
-              <div className="list-row" key={f.id}>
+              <button className="list-row" key={f.id}
+                style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left' }}
+                onClick={() => setEditingFixed(f)}>
                 <span>
                   <span className="name">{f.name}</span><br />
-                  <span className="sub">毎月{f.day_of_month}日 ・ {f.kind} ・ {f.payer}</span>
+                  <span className="sub">
+                    毎月{f.day_of_month >= 31 ? '末日' : `${f.day_of_month}日`} ・ {f.kind} ・ {f.payer}
+                  </span>
                 </span>
                 <span className="row-amount num">{yen(f.amount)}</span>
-              </div>
+              </button>
             ))}
           </div>
-          <p className="figure-sub" style={{ marginTop: 10 }}>
-            金額を変えるときは「予算」タブから変更してください。過去の記帳を残したまま切り替わります。
-          </p>
         </>
       )}
 
@@ -101,11 +107,58 @@ export default function Settings() {
         </>
       )}
 
+      {tab === 'import' && (
+        <>
+          <p className="eyebrow">りそなデビットのメール取込</p>
+          <div className="ledger">
+            <label className="switch">
+              <span>
+                <span className="name">取込を有効にする</span><br />
+                <span className="sub">オフにすると新しい明細が入らなくなります</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={conf.import_enabled === 'true'}
+                onChange={async (e) => {
+                  await setSetting('import_enabled', e.target.checked ? 'true' : 'false');
+                  load();
+                }}
+              />
+            </label>
+            <label className="switch">
+              <span>
+                <span className="name">この日以降のメールを取り込む</span><br />
+                <span className="sub">これより前のメールは無視されます</span>
+              </span>
+              <input
+                type="date"
+                value={conf.import_from ?? ''}
+                onChange={async (e) => {
+                  await setSetting('import_from', e.target.value);
+                  load();
+                }}
+              />
+            </label>
+          </div>
+          <p className="figure-sub" style={{ marginTop: 10 }}>
+            設定はすぐ反映されます。取込は1時間ごとに動きます。
+          </p>
+        </>
+      )}
+
       <div style={{ marginTop: 28 }}>
         <button className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
           ログアウト
         </button>
       </div>
+
+      {editingFixed && (
+        <FixedSheet
+          entry={editingFixed}
+          onClose={() => setEditingFixed(null)}
+          onSaved={() => { setEditingFixed(null); load(); }}
+        />
+      )}
 
       {editing && (
         <BudgetSheet
@@ -162,6 +215,78 @@ function BudgetSheet({ budget, onClose, onSaved }: {
           <label htmlFor="bf">いつから適用するか</label>
           <input id="bf" type="month" value={from} onChange={(e) => setFrom(e.target.value)} />
         </div>
+
+        {error && <p className="error">{error}</p>}
+
+        <div style={{ marginTop: 18 }}>
+          <button className="btn" onClick={save} disabled={busy}>
+            {busy ? '保存中' : '変更する'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FixedSheet({ entry, onClose, onSaved }: {
+  entry: any; onClose: () => void; onSaved: () => void;
+}) {
+  const [name, setName] = useState(entry.name);
+  const [amount, setAmount] = useState(String(entry.amount));
+  const [day, setDay] = useState(String(entry.day_of_month));
+  const [redo, setRedo] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function save() {
+    setBusy(true);
+    try {
+      await updateFixed(entry.id, {
+        name,
+        amount: Number(amount),
+        day_of_month: Number(day),
+      });
+      if (redo) await regenerateMonth(entry.id, new Date());
+      onSaved();
+    } catch (e: any) {
+      setError(e.message ?? '保存できませんでした');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="sheet" onClick={onClose}>
+      <div className="sheet-body" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <h2>固定収支の変更</h2>
+          <button onClick={onClose}>閉じる</button>
+        </div>
+
+        <div className="field">
+          <label htmlFor="fn">名前</label>
+          <input id="fn" value={name} onChange={(e) => setName(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label htmlFor="fa">金額</label>
+          <input id="fa" type="number" inputMode="numeric" value={amount}
+            onChange={(e) => setAmount(e.target.value)} />
+        </div>
+
+        <div className="field">
+          <label htmlFor="fd">計上日</label>
+          <select id="fd" value={day} onChange={(e) => setDay(e.target.value)}>
+            {Array.from({ length: 30 }, (_, i) => i + 1).map((d) => (
+              <option key={d} value={d}>{d}日</option>
+            ))}
+            <option value="31">末日</option>
+          </select>
+        </div>
+
+        <label className="learn">
+          <input type="checkbox" checked={redo} onChange={(e) => setRedo(e.target.checked)} />
+          今月の記帳も作り直す
+        </label>
 
         {error && <p className="error">{error}</p>}
 

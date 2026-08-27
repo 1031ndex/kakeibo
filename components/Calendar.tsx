@@ -7,6 +7,7 @@ import {
   type Tx, type Category,
 } from '@/lib/db';
 import TxSheet from './TxSheet';
+import Settle from './Settle';
 
 const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -203,6 +204,8 @@ export default function Calendar() {
           ))}
         </div>
       )}
+
+      <Settle month={month} />
 
       {adding && selected && (
         <TxSheet
