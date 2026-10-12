@@ -2,21 +2,30 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  ACCOUNT, fetchMonthTx, fetchCategories, fetchBudgets, fetchCarryover,
-  generateFixed, addTx, removeTx, iso, yen, monthLabel, monthStart, monthEnd,
-  type Tx, type Category,
+  ACCOUNT, fetchMonthTx, fetchCategories, fetchBudgets, fetchCarryover, fetchMoney,
+  generateFixed, removeTx, iso, yen, monthLabel, monthStart, monthEnd,
+  type Tx, type Category, type Money,
 } from '@/lib/db';
 import TxSheet from './TxSheet';
 import Settle from './Settle';
+import RefreshButton from './RefreshButton';
 
 const WEEK = ['日', '月', '火', '水', '木', '金', '土'];
 
-export default function Calendar() {
+export default function Calendar({ pending, onGoInbox, onImported }: {
+  pending: number;
+  onGoInbox: () => void;
+  onImported: () => void;
+}) {
   const [month, setMonth] = useState(() => new Date());
   const [selected, setSelected] = useState<string | null>(null);
   const [txs, setTxs] = useState<Tx[]>([]);
   const [cats, setCats] = useState<Category[]>([]);
   const [carryover, setCarryover] = useState(0);
+  const [money, setMoney] = useState<Money>({
+    balance: 0, monthly_plan: 0, saved: 0, used: 0, savings: 0, spendable: 0,
+  });
+  const [version, setVersion] = useState(0);
   const [variableBudget, setVariableBudget] = useState(0);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
@@ -26,15 +35,18 @@ export default function Calendar() {
     setLoading(true);
     try {
       await generateFixed(target);
-      const [t, c, co, b] = await Promise.all([
+      const [t, c, co, b, m] = await Promise.all([
         fetchMonthTx(ACCOUNT.RESONA, target),
         fetchCategories(),
         fetchCarryover(ACCOUNT.RESONA, target),
         fetchBudgets(target),
+        fetchMoney(target),
       ]);
       setTxs(t);
       setCats(c.filter((x) => x.account_id === ACCOUNT.RESONA));
       setCarryover(co);
+      setMoney(m);
+      setVersion((v) => v + 1);
       setVariableBudget(
         b.filter((x) => x.is_variable).reduce((s, x) => s + (x.amount ?? 0), 0)
       );
@@ -55,7 +67,6 @@ export default function Calendar() {
 
   const income = txs.filter((t) => t.type === '収入').reduce((s, t) => s + t.amount, 0);
   const outgo = txs.filter((t) => t.type === '支出').reduce((s, t) => s + t.amount, 0);
-  const balance = carryover + income - outgo;
 
   const variableUsed = txs
     .filter((t) => t.type === '支出' && t.categories?.is_variable)
@@ -102,13 +113,33 @@ export default function Calendar() {
 
       {error && <p className="error">{error}</p>}
 
+      <RefreshButton onDone={() => { load(month); onImported(); }} />
+
+      {pending > 0 && (
+        <button className="notice" onClick={onGoInbox}>
+          <span>未分類が {pending} 件あります</span>
+          <span>振り分ける ›</span>
+        </button>
+      )}
+
       <div className="balance-card">
         <div className="figure-head">
-          <span className="figure-label">月末の残り</span>
-          <span className="figure-value num">{yen(balance)}<small>円</small></span>
+          <span className="figure-label">今月使えるお金</span>
+          <span className="figure-value num"
+            data-tone={money.spendable < 0 ? 'over' : undefined}>
+            {yen(money.spendable)}<small>円</small>
+          </span>
         </div>
         <div className="figure-sub num">
-          繰越 {yen(carryover)} ＋ 入金 {yen(income)} − 支払 {yen(outgo)} 円
+          口座残高 {yen(money.balance)} − 貯蓄分 {yen(Math.max(0, money.savings))} 円
+        </div>
+        {money.savings < 0 && (
+          <div className="figure-sub" style={{ color: '#FFD3CC' }}>
+            年間支出が貯蓄を {yen(-money.savings)} 円上回っています
+          </div>
+        )}
+        <div className="figure-sub num" style={{ marginTop: 2 }}>
+          今月 繰越 {yen(carryover)} ＋ 入金 {yen(income)} − 支払 {yen(outgo)}
         </div>
         <div className="gauge" style={{ background: 'rgba(255,255,255,0.25)' }}>
           <i style={{
@@ -184,7 +215,8 @@ export default function Calendar() {
                 <br />
                 <span className="sub">
                   {t.categories?.name ?? <span className="tag">未分類</span>}
-                  {t.payer !== '共通' && ` ・ ${t.payer}が立替`}
+                  {t.type === '支出' && t.payer !== '共通' &&
+                    (t.source === 'fixed' ? ` ・ ${t.payer}の拠出から差し引き` : ` ・ ${t.payer}が立替`)}
                   {t.is_refund && ' ・ 返金'}
                 </span>
               </span>
@@ -205,7 +237,7 @@ export default function Calendar() {
         </div>
       )}
 
-      <Settle month={month} />
+      <Settle month={month} version={version} />
 
       {adding && selected && (
         <TxSheet

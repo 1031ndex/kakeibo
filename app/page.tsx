@@ -41,7 +41,9 @@ export default function Page() {
   return (
     <>
       <div className="app">
-        {tab === 'calendar' && <Calendar />}
+        {tab === 'calendar' && (
+          <Calendar pending={pending} onGoInbox={() => setTab('inbox')} onImported={refreshPending} />
+        )}
         {tab === 'inbox' && <Inbox onDone={refreshPending} />}
         {tab === 'savings' && <Savings />}
         {tab === 'chart' && <Chart />}

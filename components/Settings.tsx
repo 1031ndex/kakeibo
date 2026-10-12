@@ -3,17 +3,25 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import {
-  fetchBudgets, changeBudget, fetchFixedEntries, updateFixed, regenerateMonth,
-  fetchRules, removeRule, fetchSettings, setSetting, yen, type Budget,
+  fetchBudgets, changeBudget, fetchFixedEntries, changeFixed,
+  fetchRules, removeRule, fetchSettings, setSetting, yen,
+  type Budget, type FixedEntry,
 } from '@/lib/db';
+
+const ym = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+const fromYm = (s: string) => { const [y, m] = s.split('-').map(Number); return new Date(y, m - 1, 1); };
+const monthJa = (iso: string) => `${Number(iso.slice(5, 7))}月`;
+
+const accountLabel = (b: Budget) =>
+  b.account_kind === 'invest' ? '運用資産' : b.is_contribution ? '拠出' : '共通りそな';
 
 export default function Settings() {
   const [tab, setTab] = useState<'budget' | 'fixed' | 'rules' | 'import'>('budget');
   const [budgets, setBudgets] = useState<Budget[]>([]);
-  const [fixed, setFixed] = useState<any[]>([]);
+  const [fixed, setFixed] = useState<FixedEntry[]>([]);
   const [rules, setRules] = useState<any[]>([]);
   const [editing, setEditing] = useState<Budget | null>(null);
-  const [editingFixed, setEditingFixed] = useState<any | null>(null);
+  const [editingFixed, setEditingFixed] = useState<FixedEntry | null>(null);
   const [conf, setConf] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
 
@@ -30,6 +38,15 @@ export default function Settings() {
 
   useEffect(() => { load(); }, [load]);
 
+  // 今月の貯蓄額の内訳（拠出の合計 − 生活費の予算）
+  const resona = budgets.filter((b) => b.account_kind === 'resona');
+  const contrib = resona.filter((b) => b.is_contribution).reduce((s, b) => s + (b.amount ?? 0), 0);
+  const living = resona
+    .filter((b) => b.kind === '支出' && !b.is_annual)
+    .reduce((s, b) => s + (b.amount ?? 0), 0);
+
+  const shown = budgets.filter((b) => b.amount !== null || b.next_amount !== null);
+
   return (
     <>
       <header className="topbar"><h1>設定</h1></header>
@@ -38,27 +55,41 @@ export default function Settings() {
 
       <div className="seg">
         <button data-on={tab === 'budget'} onClick={() => setTab('budget')}>予算</button>
-        <button data-on={tab === 'fixed'} onClick={() => setTab('fixed')}>固定収支</button>
+        <button data-on={tab === 'fixed'} onClick={() => setTab('fixed')}>自動計上</button>
         <button data-on={tab === 'rules'} onClick={() => setTab('rules')}>店名ルール</button>
         <button data-on={tab === 'import'} onClick={() => setTab('import')}>取込</button>
       </div>
 
       {tab === 'budget' && (
         <>
+          <div className="settle">
+            <div className="settle-name">今月の貯蓄額</div>
+            <div className="settle-pay">{yen(contrib - living)} 円</div>
+            <div className="settle-calc">
+              拠出 {yen(contrib)} − 生活費の予算 {yen(living)}
+            </div>
+          </div>
+          <p className="figure-sub" style={{ marginTop: 8 }}>
+            拠出や生活費の予算を変えると、その月から貯蓄額も自動で変わります。
+          </p>
+
           <p className="eyebrow">タップすると金額を変えられます</p>
           <div className="ledger">
-            {budgets.filter((b) => b.amount !== null).map((b) => (
+            {shown.map((b) => (
               <button className="list-row" key={b.category_id}
                 style={{ width: '100%', border: 'none', background: 'none', textAlign: 'left' }}
                 onClick={() => setEditing(b)}>
                 <span>
                   <span className="name">{b.name}</span><br />
                   <span className="sub">
-                    {b.account_kind === 'resona' ? '共通りそな' : b.account_kind === 'savings' ? '貯蓄口座' : '運用資産'}
+                    {accountLabel(b)}
                     {b.is_variable && ' ・ 変動費'}
+                    {b.next_from && ` ・ ${monthJa(b.next_from)}から ${yen(b.next_amount ?? 0)}`}
                   </span>
                 </span>
-                <span className="row-amount num">{yen(b.amount ?? 0)}</span>
+                <span className="row-amount num">
+                  {b.amount === null ? '—' : yen(b.amount)}
+                </span>
               </button>
             ))}
           </div>
@@ -67,7 +98,7 @@ export default function Settings() {
 
       {tab === 'fixed' && (
         <>
-          <p className="eyebrow">毎月このタイミングで自動計上されます</p>
+          <p className="eyebrow">毎月このタイミングで自動で記帳されます</p>
           <div className="ledger">
             {fixed.map((f) => (
               <button className="list-row" key={f.id}
@@ -76,7 +107,9 @@ export default function Settings() {
                 <span>
                   <span className="name">{f.name}</span><br />
                   <span className="sub">
-                    毎月{f.day_of_month >= 31 ? '末日' : `${f.day_of_month}日`} ・ {f.kind} ・ {f.payer}
+                    {f.frequency === 'monthly' ? '毎月' : `${(f.months ?? []).join('・')}月`}
+                    {f.day_of_month >= 31 ? '末日' : `${f.day_of_month}日`} ・ {f.kind} ・ {f.payer}
+                    {f.valid_from > new Date().toISOString().slice(0, 10) && ` ・ ${monthJa(f.valid_from)}から`}
                   </span>
                 </span>
                 <span className="row-amount num">{yen(f.amount)}</span>
@@ -141,7 +174,7 @@ export default function Settings() {
             </label>
           </div>
           <p className="figure-sub" style={{ marginTop: 10 }}>
-            設定はすぐ反映されます。取込は1時間ごとに動きます。
+            設定はすぐ反映されます。取込は1時間ごと、またはカレンダーの「りそなを読み込む」で動きます。
           </p>
         </>
       )}
@@ -175,17 +208,18 @@ function BudgetSheet({ budget, onClose, onSaved }: {
   budget: Budget; onClose: () => void; onSaved: () => void;
 }) {
   const now = new Date();
-  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-  const [amount, setAmount] = useState(String(budget.amount ?? 0));
-  const [from, setFrom] = useState(`${nextMonth.getFullYear()}-${String(nextMonth.getMonth() + 1).padStart(2, '0')}`);
+  const thisMonth = ym(now);
+  const nextMonth = ym(new Date(now.getFullYear(), now.getMonth() + 1, 1));
+  const [amount, setAmount] = useState(String(budget.amount ?? budget.next_amount ?? 0));
+  const [from, setFrom] = useState(nextMonth);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function save() {
+    if (from < thisMonth) { setError('今月より前は選べません'); return; }
     setBusy(true);
     try {
-      const [y, m] = from.split('-').map(Number);
-      await changeBudget(budget.category_id, Number(amount), new Date(y, m - 1, 1));
+      await changeBudget(budget.category_id, Number(amount), fromYm(from));
       onSaved();
     } catch (e: any) {
       setError(e.message ?? '保存できませんでした');
@@ -202,7 +236,9 @@ function BudgetSheet({ budget, onClose, onSaved }: {
         </div>
 
         <p className="figure-sub" style={{ marginTop: 8 }}>
-          今の金額は {yen(budget.amount ?? 0)} 円です。変更しても過去の記帳はそのまま残ります。
+          今の金額は {budget.amount === null ? 'なし' : `${yen(budget.amount)} 円`}
+          {budget.next_from && `（${monthJa(budget.next_from)}から ${yen(budget.next_amount ?? 0)} 円の予定）`}。
+          変えても、それより前の月の記帳はそのまま残ります。
         </p>
 
         <div className="field">
@@ -212,9 +248,15 @@ function BudgetSheet({ budget, onClose, onSaved }: {
         </div>
 
         <div className="field">
-          <label htmlFor="bf">いつから適用するか</label>
-          <input id="bf" type="month" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <label htmlFor="bf">いつから</label>
+          <input id="bf" type="month" min={thisMonth} value={from}
+            onChange={(e) => setFrom(e.target.value)} />
         </div>
+
+        <p className="figure-sub" style={{ marginTop: 8 }}>
+          この月より後に予約されている変更は、この金額で上書きされます。
+          自動で記帳される項目（拠出・家賃など）は、記帳される額も一緒に変わります。
+        </p>
 
         {error && <p className="error">{error}</p>}
 
@@ -229,24 +271,25 @@ function BudgetSheet({ budget, onClose, onSaved }: {
 }
 
 function FixedSheet({ entry, onClose, onSaved }: {
-  entry: any; onClose: () => void; onSaved: () => void;
+  entry: FixedEntry; onClose: () => void; onSaved: () => void;
 }) {
+  const thisMonth = ym(new Date());
   const [name, setName] = useState(entry.name);
   const [amount, setAmount] = useState(String(entry.amount));
   const [day, setDay] = useState(String(entry.day_of_month));
-  const [redo, setRedo] = useState(true);
+  const [from, setFrom] = useState(entry.valid_from.slice(0, 7) > thisMonth ? entry.valid_from.slice(0, 7) : thisMonth);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
   async function save() {
+    if (from < thisMonth) { setError('今月より前は選べません'); return; }
     setBusy(true);
     try {
-      await updateFixed(entry.id, {
+      await changeFixed(entry, {
         name,
         amount: Number(amount),
         day_of_month: Number(day),
-      });
-      if (redo) await regenerateMonth(entry.id, new Date());
+      }, fromYm(from));
       onSaved();
     } catch (e: any) {
       setError(e.message ?? '保存できませんでした');
@@ -258,7 +301,7 @@ function FixedSheet({ entry, onClose, onSaved }: {
     <div className="sheet" onClick={onClose}>
       <div className="sheet-body" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-head">
-          <h2>固定収支の変更</h2>
+          <h2>自動計上の変更</h2>
           <button onClick={onClose}>閉じる</button>
         </div>
 
@@ -274,7 +317,7 @@ function FixedSheet({ entry, onClose, onSaved }: {
         </div>
 
         <div className="field">
-          <label htmlFor="fd">計上日</label>
+          <label htmlFor="fd">記帳する日</label>
           <select id="fd" value={day} onChange={(e) => setDay(e.target.value)}>
             {Array.from({ length: 30 }, (_, i) => i + 1).map((d) => (
               <option key={d} value={d}>{d}日</option>
@@ -283,10 +326,16 @@ function FixedSheet({ entry, onClose, onSaved }: {
           </select>
         </div>
 
-        <label className="learn">
-          <input type="checkbox" checked={redo} onChange={(e) => setRedo(e.target.checked)} />
-          今月の記帳も作り直す
-        </label>
+        <div className="field">
+          <label htmlFor="ff">いつから</label>
+          <input id="ff" type="month" min={thisMonth} value={from}
+            onChange={(e) => setFrom(e.target.value)} />
+        </div>
+
+        <p className="figure-sub" style={{ marginTop: 8 }}>
+          末日を選ぶと、2月は28日、4月は30日のように月ごとに合わせます。
+          この月からの記帳は新しい内容で作り直されます。それより前はそのままです。
+        </p>
 
         {error && <p className="error">{error}</p>}
 

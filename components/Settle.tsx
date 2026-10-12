@@ -6,9 +6,14 @@ import {
   type Settlement, type Tx,
 } from '@/lib/db';
 
-export default function Settle({ month }: { month: Date }) {
+/**
+ * その月に2人が共通りそなへ入れる額。
+ * 本人が払った共通の支出（デビットが使えなかった店の立替・誕生日プレゼント）は
+ * その月の拠出から差し引く。
+ */
+export default function Settle({ month, version }: { month: Date; version: number }) {
   const [rows, setRows] = useState<Settlement[]>([]);
-  const [advanced, setAdvanced] = useState<Tx[]>([]);
+  const [minus, setMinus] = useState<Tx[]>([]);
   const [error, setError] = useState('');
 
   const load = useCallback(async () => {
@@ -18,14 +23,15 @@ export default function Settle({ month }: { month: Date }) {
         fetchMonthTx(ACCOUNT.RESONA, month),
       ]);
       setRows(s);
-      setAdvanced(t.filter((x) => x.payer !== '共通' && x.type === '支出'));
+      setMinus(t.filter((x) => x.payer !== '共通' && x.type === '支出'));
       setError('');
     } catch (e: any) {
       setError(e.message ?? '読み込めませんでした');
     }
   }, [month]);
 
-  useEffect(() => { load(); }, [load]);
+  // version は親が再読み込みしたときに増える。手入力のあとも取り直すため
+  useEffect(() => { load(); }, [load, version]);
 
   return (
     <>
@@ -37,24 +43,25 @@ export default function Settle({ month }: { month: Date }) {
         <div className="settle" key={r.user_name}>
           <div className="settle-name">{r.user_name}</div>
           <div className="settle-pay">{yen(r.to_pay)} 円</div>
-          {r.advanced > 0 && (
+          {r.advanced !== 0 && (
             <div className="settle-calc">
-              基準 {yen(r.base_amount)} − 立替 {yen(r.advanced)}
+              いつもの {yen(r.base_amount)} − 差し引き {yen(r.advanced)}
             </div>
           )}
         </div>
       ))}
 
-      {advanced.length > 0 && (
+      {minus.length > 0 ? (
         <>
-          <p className="eyebrow">立替の明細</p>
+          <p className="eyebrow">差し引く分</p>
           <div className="ledger">
-            {advanced.map((t) => (
+            {minus.map((t) => (
               <div className="list-row" key={t.id}>
                 <span>
                   <span className="name">{t.merchant || t.categories?.name}</span><br />
                   <span className="sub">
-                    {t.occurred_on.replace(/-/g, '/')}　{t.categories?.name}　{t.payer}
+                    {t.occurred_on.replace(/-/g, '/')}　{t.payer}
+                    {t.source === 'fixed' ? '　手元に残して使う分' : '　立替'}
                   </span>
                 </span>
                 <span className="row-amount num">{yen(t.amount)}</span>
@@ -62,11 +69,9 @@ export default function Settle({ month }: { month: Date }) {
             ))}
           </div>
         </>
-      )}
-
-      {advanced.length === 0 && (
+      ) : (
         <p className="figure-sub" style={{ marginTop: 10 }}>
-          この月の立替はありません。基準額をそのまま入れてください。
+          この月に差し引く分はありません。いつもの額を入れてください。
         </p>
       )}
     </>

@@ -5,6 +5,7 @@ import {
   ACCOUNT, fetchUnclassified, fetchCategories, classify, learnRule,
   yen, type Tx, type Category,
 } from '@/lib/db';
+import RefreshButton from './RefreshButton';
 
 export default function Inbox({ onDone }: { onDone: () => void }) {
   const [queue, setQueue] = useState<Tx[]>([]);
@@ -29,6 +30,17 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
 
   const current = queue[0];
 
+  // 取込ボタンを押したあと、未分類の一覧を取り直す
+  const reload = async () => {
+    try {
+      const q = await fetchUnclassified();
+      setQueue(q);
+      onDone();
+    } catch (e: any) {
+      setError(e.message ?? '読み込めませんでした');
+    }
+  };
+
   async function pick(cat: Category) {
     if (!current) return;
     try {
@@ -47,6 +59,7 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
     return (
       <>
         <header className="topbar"><h1>未分類</h1></header>
+        <RefreshButton onDone={reload} />
         <div className="empty">
           <strong>すべて振り分けました</strong>
           デビットを使うとここに並びます
@@ -61,6 +74,8 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
         <h1>未分類</h1>
         <span className="month-label num">残り {queue.length} 件</span>
       </header>
+
+      <RefreshButton onDone={reload} />
 
       {error && <p className="error">{error}</p>}
 

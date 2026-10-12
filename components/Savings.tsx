@@ -2,37 +2,45 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  ACCOUNT, fetchYearTx, fetchCategories, fetchBalance, fetchAnnualTargets,
-  generateFixed, removeTx, iso, yen, type Tx, type Category,
+  ACCOUNT, fetchYearTx, fetchCategories, fetchBalance, fetchAnnualTargets, fetchMoney,
+  generateFixed, removeTx, iso, yen,
+  type Tx, type Category, type Money,
 } from '@/lib/db';
 import TxSheet from './TxSheet';
 
+type Target = Awaited<ReturnType<typeof fetchAnnualTargets>>[number];
+
 export default function Savings() {
-  const [year, setYear] = useState(() => new Date().getFullYear());
+  const thisYear = new Date().getFullYear();
+  const [year, setYear] = useState(thisYear);
   const [tab, setTab] = useState<'cash' | 'invest'>('cash');
   const [txs, setTxs] = useState<Tx[]>([]);
   const [investTxs, setInvestTxs] = useState<Tx[]>([]);
   const [cats, setCats] = useState<Category[]>([]);
-  const [balance, setBalance] = useState(0);
+  const [money, setMoney] = useState<Money>({
+    balance: 0, monthly_plan: 0, saved: 0, used: 0, savings: 0, spendable: 0,
+  });
   const [investTotal, setInvestTotal] = useState(0);
-  const [targets, setTargets] = useState<{ category_id: number; amount: number; categories: { name: string } }[]>([]);
+  const [targets, setTargets] = useState<Target[]>([]);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState('');
 
   const load = useCallback(async (y: number) => {
     try {
-      // 今月分の積立が未計上なら計上しておく
-      await generateFixed(new Date());
-      const [t, it, c, bal, inv, tg] = await Promise.all([
-        fetchYearTx(ACCOUNT.SAVINGS, y),
+      // 過去の年はその年末時点、今年以降は今月時点の貯蓄を出す
+      const now = new Date();
+      const asOf = y < now.getFullYear() ? new Date(y, 11, 1) : now;
+      await generateFixed(now);
+      const [t, it, c, m, inv, tg] = await Promise.all([
+        fetchYearTx(ACCOUNT.RESONA, y),
         fetchYearTx(ACCOUNT.INVEST, y),
         fetchCategories(),
-        fetchBalance(ACCOUNT.SAVINGS),
+        fetchMoney(asOf),
         fetchBalance(ACCOUNT.INVEST),
         fetchAnnualTargets(y),
       ]);
       setTxs(t); setInvestTxs(it); setCats(c);
-      setBalance(bal); setInvestTotal(inv); setTargets(tg);
+      setMoney(m); setInvestTotal(inv); setTargets(tg);
       setError('');
     } catch (e: any) {
       setError(e.message ?? '読み込めませんでした');
@@ -41,23 +49,26 @@ export default function Savings() {
 
   useEffect(() => { load(year); }, [year, load]);
 
-  const income = txs.filter((t) => t.type === '収入').reduce((s, t) => s + t.amount, 0);
-  const outgo = txs.filter((t) => t.type === '支出').reduce((s, t) => s + t.amount, 0);
+  // 貯蓄に関わる記帳だけを抜き出す（年間支出・ボーナス・還付金）
+  const savingsTxs = txs.filter(
+    (t) => (t.type === '支出' && t.categories?.is_annual)
+        || (t.type === '収入' && t.categories?.is_savings_income)
+  );
 
-  // 年間支出の項目ごとの使用額
   const usedBy = new Map<number, number>();
-  for (const t of txs) {
+  for (const t of savingsTxs) {
     if (t.type === '支出' && t.category_id) {
       usedBy.set(t.category_id, (usedBy.get(t.category_id) ?? 0) + t.amount);
     }
   }
 
-  // 運用資産の項目ごとの累計
   const investBy = new Map<string, number>();
   for (const t of investTxs) {
     const n = t.categories?.name ?? '';
     investBy.set(n, (investBy.get(n) ?? 0) + t.amount);
   }
+
+  const rate = money.saved > 0 ? Math.min(100, (money.used / money.saved) * 100) : 0;
 
   return (
     <>
@@ -73,7 +84,7 @@ export default function Savings() {
       {error && <p className="error">{error}</p>}
 
       <div className="seg">
-        <button data-on={tab === 'cash'} onClick={() => setTab('cash')}>貯蓄口座</button>
+        <button data-on={tab === 'cash'} onClick={() => setTab('cash')}>貯蓄</button>
         <button data-on={tab === 'invest'} onClick={() => setTab('invest')}>運用資産</button>
       </div>
 
@@ -81,24 +92,37 @@ export default function Savings() {
         <>
           <div className="balance-card">
             <div className="figure-head">
-              <span className="figure-label">貯蓄口座の残高</span>
-              <span className="figure-value num">{yen(balance)}<small>円</small></span>
+              <span className="figure-label">
+                貯蓄の残り{year < thisYear ? `（${year}年末）` : ''}
+              </span>
+              <span className="figure-value num">{yen(money.savings)}<small>円</small></span>
             </div>
             <div className="figure-sub num">
-              {year}年　入金 {yen(income)} − 使用 {yen(outgo)} 円
+              これまでの積立 {yen(money.saved)} − 年間支出 {yen(money.used)} 円
+            </div>
+            <div className="gauge" style={{ background: 'rgba(255,255,255,0.25)' }}>
+              <i style={{ width: `${rate}%`, background: '#fff' }} />
+            </div>
+            <div className="figure-sub num" style={{ marginTop: 6 }}>
+              毎月の積立 {yen(money.monthly_plan)} 円（拠出 − 生活費の予算）
             </div>
           </div>
 
+          <p className="figure-sub" style={{ marginTop: 10 }}>
+            共通りそなの残高のうち、生活費として使わない分です。
+            ボーナス・還付金はここに入り、旅行・住民税・誕生日などはここから出ます。
+          </p>
+
           <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => setAdding(true)}>
-            ボーナス・年間支出を入力
+            ボーナス・年間支出を記録する
           </button>
 
-          <p className="eyebrow">年間支出の使用状況</p>
+          <p className="eyebrow">{year}年の年間支出</p>
           <div className="ledger">
             {targets.length === 0 && <div className="empty">この年の目安が登録されていません</div>}
             {targets.map((t) => {
               const used = usedBy.get(t.category_id) ?? 0;
-              const rate = t.amount > 0 ? Math.min(100, (used / t.amount) * 100) : 0;
+              const r = t.amount > 0 ? Math.min(100, (used / t.amount) * 100) : 0;
               const over = t.amount > 0 && used > t.amount;
               return (
                 <div className="budget-row" key={t.category_id}>
@@ -109,30 +133,30 @@ export default function Savings() {
                     </span>
                   </div>
                   <div className="gauge" data-tone={over ? 'over' : undefined}>
-                    <i style={{ width: `${rate}%` }} />
+                    <i style={{ width: `${r}%` }} />
                   </div>
                 </div>
               );
             })}
           </div>
 
-          <p className="eyebrow">入出金の記録</p>
-          {txs.length === 0 ? (
+          <p className="eyebrow">{year}年の記録</p>
+          {savingsTxs.length === 0 ? (
             <div className="empty">
               <strong>まだ記録がありません</strong>
-              毎月25日に積立が自動で入ります
+              ボーナスや旅行代を記録するとここに並びます
             </div>
           ) : (
             <div className="ledger">
-              {txs.map((t) => (
+              {savingsTxs.map((t) => (
                 <div className="list-row" key={t.id}>
                   <span>
-                    <span className="name">{t.merchant || t.categories?.name}</span>
-                    <br />
+                    <span className="name">{t.merchant || t.categories?.name}</span><br />
                     <span className="sub">{t.occurred_on.replace(/-/g, '/')}　{t.categories?.name}</span>
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span className="row-amount num" style={t.type === '収入' ? { color: 'var(--ai)' } : { color: 'var(--shu)' }}>
+                    <span className="row-amount num"
+                      style={{ color: t.type === '収入' ? 'var(--ai)' : 'var(--shu)' }}>
                       {t.type === '収入' ? '+' : '−'}{yen(t.amount)}
                     </span>
                     {t.source !== 'fixed' && (
@@ -154,7 +178,8 @@ export default function Savings() {
               <span className="figure-value num">{yen(investTotal)}<small>円</small></span>
             </div>
             <div className="figure-sub">
-              給与口座から自動で引かれる分。現金ではないため貯蓄口座とは分けています
+              給与口座から自動で引かれる分（個人年金・自社株・投資信託・NISA）。
+              現金ではないため貯蓄とは分けています
             </div>
           </div>
 
@@ -176,10 +201,11 @@ export default function Savings() {
 
       {adding && (
         <TxSheet
-          title="貯蓄口座に手入力"
+          title="ボーナス・年間支出を記録"
           date={iso(new Date())}
-          accountId={ACCOUNT.SAVINGS}
-          cats={cats.filter((c) => c.account_id === ACCOUNT.SAVINGS)}
+          accountId={ACCOUNT.RESONA}
+          cats={cats.filter((c) => c.is_annual || c.is_savings_income)}
+          showPayer
           onClose={() => setAdding(false)}
           onSaved={() => { setAdding(false); load(year); }}
         />

@@ -1,94 +1,134 @@
 /**
  * りそなデビット利用メール → Supabase 取込
- * 家計簿アプリ v1.2
+ * 家計簿アプリ v3（最終版）
  *
- * 【初回セットアップ】
- *  1. Apps Script の「プロジェクトの設定」→「スクリプト プロパティ」に以下を登録
- *       SUPABASE_URL      https://xxxxxxxx.supabase.co
- *       SUPABASE_KEY      service_role キー
- *       ERROR_MAIL_TO     エラー通知先メールアドレス
- *  2. setup() を一度だけ実行（Gmailラベルと時間トリガーを作成）
- *  3. 以後 importResona() が1時間ごとに自動実行される
+ * 【セットアップ】
+ *  1. 「プロジェクトの設定」→「スクリプト プロパティ」に4つ登録
+ *       SUPABASE_URL    https://xxxxxxxx.supabase.co  （末尾に /rest/v1/ を付けない）
+ *       SUPABASE_KEY    Secret key（sb_secret_... で始まるもの）
+ *       ERROR_MAIL_TO   エラー通知先メールアドレス
+ *       REFRESH_TOKEN   アプリの更新ボタン用の合言葉（自分で決めた文字列）
+ *  2. setup() を一度実行（1時間ごとの自動実行を登録）
+ *  3. importResona() を一度実行（取りこぼしていた分をまとめて取り込む）
+ *  4. 「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」
+ *       次のユーザーとして実行: 自分
+ *       アクセスできるユーザー: 全員
+ *     出てきた /exec のURLを、Vercel の環境変数 GAS_REFRESH_URL に登録する。
+ *     「全員」にするのは Vercel から呼ぶため。合言葉が一致しない要求は何もしない。
  *
- * 【旧版からの変更点】
- *  - スプレッドシートではなく Supabase に登録する
- *  - 返金・取消メール（件名「入金取引のご連絡」）に対応。マイナス金額で登録する
- *    ※ 旧版は「ご利用金額」しか見ておらず、返金を無言で捨てていた
- *  - 重複排除キーを承認番号から Gmail メッセージ ID に変更
- *    ※ 承認番号は6桁しかなく、いずれ衝突して正常な明細が欠落する
- *  - 検索窓（newer_than:30d）をやめ、処理済みラベル方式にした
- *    ※ トリガーが長期間止まっても取りこぼさない
- *  - カテゴリ推定のハードコードを廃止し、merchant_rules テーブルを参照する
- *    ※ アプリ画面からルールを育てられる
- *  - パース失敗を import_errors に記録し、メールで通知する
+ *  ※ あとでこのコードを書き換えたときは「デプロイを管理」→ 鉛筆 →
+ *     バージョン「新バージョン」→ デプロイ。URLは変わらない。
+ *
+ * 【仕組み】
+ *  ・取り込んだかどうかは、Supabase に登録済みの Gmail メッセージID で判定する。
+ *    りそなは件名が毎回同じなので Gmail が複数の通知を1つのスレッドにまとめる。
+ *    スレッド単位で判定すると、同じスレッドに後から届いた通知を取りこぼす。
+ *  ・取り込む件名は次の2つだけ。
+ *      取り込む    : ご利用およびご利用代金引落しのご連絡
+ *      取り込む    : 入金取引のご連絡（返品・取消。マイナス金額で登録）
+ *      取り込まない: お取引不能のご連絡 / 利用限度額変更通知 / その他の案内
+ *    「お取引不能」は決済が成立していないのに「ご利用金額」が書かれているため、
+ *    条件を緩めると使っていない金額が支出として入ってしまう。
+ *  ・読み取れなかったメールは1回だけ通知する（毎時同じエラーが届かないように）。
+ *  ・1時間ごとの自動実行と更新ボタンが同時に動いても二重にならないよう、ロックをかける。
  */
 
 // ===== 設定 =====
-const LABEL_DONE   = '家計簿/取込済';
-const SENDER       = 'debit.resonabank.co.jp';
-const ACCOUNT_RESONA = 1;  // accounts.id = 1（共通りそな）
-const BATCH_SIZE   = 50;
+const SENDER         = 'debit.resonabank.co.jp';
+const ACCOUNT_RESONA = 1;      // accounts.id = 1（共通りそな）
+const SEARCH_DAYS    = 60;     // 何日前まで遡って探すか
+const MAX_THREADS    = 100;
+const TARGET_SUBJECT = /ご利用代金引落し|入金取引/;
+const REFUND_SUBJECT = /入金取引/;
 
-// ===== 初回セットアップ =====
+// ===== セットアップ =====
 function setup() {
-  if (!GmailApp.getUserLabelByName(LABEL_DONE)) {
-    GmailApp.createLabel(LABEL_DONE);
-  }
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (t.getHandlerFunction() === 'importResona') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('importResona').timeBased().everyHours(1).create();
-  Logger.log('セットアップ完了');
+  Logger.log('セットアップ完了：1時間ごとに importResona が動きます');
+}
+
+// ===== アプリの更新ボタンから呼ばれる入口 =====
+function doGet(e) {
+  const want = PropertiesService.getScriptProperties().getProperty('REFRESH_TOKEN');
+  const got = (e && e.parameter && e.parameter.token) || '';
+  if (!want || got !== want) return json_({ ok: false, error: 'unauthorized' });
+  try {
+    const r = importResona();
+    return json_({ ok: true, imported: r.imported, errors: r.errors });
+  } catch (err) {
+    return json_({ ok: false, error: String(err) });
+  }
+}
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 // ===== メイン =====
 function importResona() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30 * 1000)) {
+    Logger.log('別の取込が実行中のため終了');
+    return { imported: 0, errors: 0 };
+  }
+  try {
+    return importResona_();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function importResona_() {
   const props = PropertiesService.getScriptProperties();
   const url = props.getProperty('SUPABASE_URL');
   const key = props.getProperty('SUPABASE_KEY');
   if (!url || !key) throw new Error('SUPABASE_URL / SUPABASE_KEY が未設定です');
 
-  const label = GmailApp.getUserLabelByName(LABEL_DONE);
-  if (!label) throw new Error('先に setup() を実行してください');
-
   // アプリの設定タブで取込を止められる
   const conf = fetchSettings_(url, key);
   if (conf.import_enabled === 'false') {
     Logger.log('取込は設定でオフになっています');
-    return;
+    return { imported: 0, errors: 0 };
   }
   const importFrom = conf.import_from || '1970-01-01';
 
   const rules = fetchRules_(url, key);
+  const known = fetchKnownIds_(url, key);   // 登録済み・エラー記録済みのメッセージID
+
   const threads = GmailApp.search(
-    'from:(' + SENDER + ') -label:"' + LABEL_DONE + '"', 0, BATCH_SIZE);
+    'from:(' + SENDER + ') newer_than:' + SEARCH_DAYS + 'd', 0, MAX_THREADS);
 
   const rows = [];
   const errors = [];
-  const doneThreads = [];
 
   threads.forEach(function (thread) {
     thread.getMessages().forEach(function (msg) {
-      const subject = msg.getSubject() || '';
-      const body = msg.getPlainBody() || '';
-      const isRefund = /入金取引/.test(subject);
-      const parsed = parseMail_(body, msg.getDate(), isRefund);
+      const id = msg.getId();
+      if (known[id]) return;
 
-      // 運用開始前のメールは取り込まない
-      if (parsed && parsed.occurredOn < importFrom) {
-        thread.addLabel(label);
-        return;
-      }
+      const subject = msg.getSubject() || '';
+      if (!TARGET_SUBJECT.test(subject)) return;
+
+      const isRefund = REFUND_SUBJECT.test(subject);
+      const body = msg.getPlainBody() || '';
+      const parsed = parseMail_(body, msg.getDate(), isRefund);
 
       if (!parsed) {
         errors.push({
-          gmail_message_id: msg.getId(),
+          gmail_message_id: id,
           subject: subject,
           reason: '金額または承認番号を読み取れませんでした',
           raw_excerpt: body.slice(0, 500)
         });
         return;
       }
+
+      // 運用開始前のメールは取り込まない
+      if (parsed.occurredOn < importFrom) return;
 
       rows.push({
         occurred_on: parsed.occurredOn,
@@ -98,24 +138,44 @@ function importResona() {
         merchant: parsed.store,
         amount: isRefund ? -parsed.amount : parsed.amount,
         payer: '共通',
-        gmail_message_id: msg.getId(),
+        gmail_message_id: id,
         approval_no: parsed.approvalNo,
         is_refund: isRefund,
         source: 'auto'
       });
     });
-    doneThreads.push(thread);
   });
 
-  if (rows.length) postRows_(url, key, 'transactions', rows);
+  if (rows.length) postRows_(url, key, 'transactions?on_conflict=gmail_message_id', rows, true);
   if (errors.length) {
-    postRows_(url, key, 'import_errors', errors);
+    postRows_(url, key, 'import_errors', errors, false);
     notifyErrors_(errors);
   }
-  // 登録が成功した場合のみラベルを付ける（失敗時は次回リトライされる）
-  doneThreads.forEach(function (t) { t.addLabel(label); });
 
   Logger.log('取込 ' + rows.length + '件 / エラー ' + errors.length + '件');
+  return { imported: rows.length, errors: errors.length };
+}
+
+// ===== 取り込み済みのメッセージID =====
+// 明細として登録済みのものと、エラーとして記録済みのもの。
+// 後者を含めないと、読めないメールについて毎時同じエラー通知が届いてしまう。
+function fetchKnownIds_(url, key) {
+  const since = Utilities.formatDate(
+    new Date(Date.now() - (SEARCH_DAYS + 15) * 24 * 3600 * 1000), 'Asia/Tokyo', 'yyyy-MM-dd');
+  const headers = { apikey: key, Authorization: 'Bearer ' + key };
+  const out = {};
+
+  [
+    url + '/rest/v1/transactions?select=gmail_message_id&gmail_message_id=not.is.null&created_at=gte.' + since,
+    url + '/rest/v1/import_errors?select=gmail_message_id&gmail_message_id=not.is.null&created_at=gte.' + since
+  ].forEach(function (u) {
+    const res = UrlFetchApp.fetch(u, { headers: headers, muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      throw new Error('登録済みの明細を読めませんでした (' + res.getResponseCode() + '): ' + res.getContentText());
+    }
+    JSON.parse(res.getContentText()).forEach(function (r) { out[r.gmail_message_id] = true; });
+  });
+  return out;
 }
 
 // ===== メール本文の解析 =====
@@ -126,12 +186,13 @@ function parseMail_(body, receivedAt, isRefund) {
   const approvalM = body.match(/承認番号[：:]\s*(\d+)/);
   if (!amountM || !approvalM) return null;
 
-  const dateM  = body.match(/ご利用日時[：:]\s*(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{1,2}:\d{2})/);
+  const dateM  = body.match(/ご利用日時[：:]\s*(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})/);
   const storeM = body.match(/ご利用加盟店名[^：:]*[：:]\s*(.+)/);
 
   let occurredOn;
   if (dateM && !isRefund) {
-    occurredOn = dateM[1].replace(/\//g, '-').replace(/-(\d)(?!\d)/g, '-0$1');
+    const p = dateM[1].split(/[\/\-]/);
+    occurredOn = p[0] + '-' + ('0' + p[1]).slice(-2) + '-' + ('0' + p[2]).slice(-2);
   } else {
     // 返金メールには日時がないため受信日を使う
     occurredOn = Utilities.formatDate(receivedAt, 'Asia/Tokyo', 'yyyy-MM-dd');
@@ -151,7 +212,9 @@ function fetchSettings_(url, key) {
     headers: { apikey: key, Authorization: 'Bearer ' + key },
     muteHttpExceptions: true
   });
-  if (res.getResponseCode() !== 200) return {};
+  if (res.getResponseCode() !== 200) {
+    throw new Error('Supabase に接続できません (' + res.getResponseCode() + ')。一時停止していないか確認してください');
+  }
   const out = {};
   JSON.parse(res.getContentText()).forEach(function (r) { out[r.key] = r.value; });
   return out;
@@ -180,23 +243,19 @@ function matchCategory_(store, rules) {
 }
 
 // ===== Supabase へ登録 =====
-function postRows_(url, key, table, rows) {
-  const res = UrlFetchApp.fetch(url + '/rest/v1/' + table, {
+function postRows_(url, key, path, rows, ignoreDuplicates) {
+  const headers = { apikey: key, Authorization: 'Bearer ' + key };
+  // 同じメッセージIDがすでにあれば黙って飛ばす（二重登録しない）
+  headers.Prefer = ignoreDuplicates ? 'resolution=ignore-duplicates,return=minimal' : 'return=minimal';
+  const res = UrlFetchApp.fetch(url + '/rest/v1/' + path, {
     method: 'post',
     contentType: 'application/json',
-    headers: {
-      apikey: key,
-      Authorization: 'Bearer ' + key,
-      // gmail_message_id の UNIQUE 制約に当たった行は黙って無視される
-      Prefer: 'resolution=ignore-duplicates,return=minimal'
-    },
+    headers: headers,
     payload: JSON.stringify(rows),
     muteHttpExceptions: true
   });
   const code = res.getResponseCode();
-  if (code >= 300) {
-    throw new Error(table + ' の登録に失敗 (' + code + '): ' + res.getContentText());
-  }
+  if (code >= 300) throw new Error(path + ' の登録に失敗 (' + code + '): ' + res.getContentText());
 }
 
 // ===== エラー通知 =====
@@ -207,17 +266,46 @@ function notifyErrors_(errors) {
     return '件名: ' + e.subject + '\n理由: ' + e.reason;
   }).join('\n\n');
   MailApp.sendEmail(to, '[家計簿] 取込エラー ' + errors.length + '件',
-    'りそなメールの解析に失敗しました。メールの書式が変わった可能性があります。\n\n' + lines);
+    'りそなメールの読み取りに失敗しました。メールの書式が変わった可能性があります。\n' +
+    '同じメールについての通知はこれが最後です。\n\n' + lines);
 }
 
-// ===== 動作確認用（1件だけ解析してログに出す。登録はしない）=====
+// ===== 動作確認用（解析結果をログに出すだけ。登録はしない）=====
 function dryRun() {
-  const threads = GmailApp.search('from:(' + SENDER + ')', 0, 3);
+  const threads = GmailApp.search('from:(' + SENDER + ') newer_than:14d', 0, 20);
   threads.forEach(function (th) {
     th.getMessages().forEach(function (m) {
-      const isRefund = /入金取引/.test(m.getSubject() || '');
-      Logger.log(m.getSubject());
-      Logger.log(JSON.stringify(parseMail_(m.getPlainBody(), m.getDate(), isRefund)));
+      const subject = m.getSubject() || '';
+      if (!TARGET_SUBJECT.test(subject)) {
+        Logger.log('[対象外] ' + subject);
+        return;
+      }
+      Logger.log(JSON.stringify(parseMail_(m.getPlainBody(), m.getDate(), REFUND_SUBJECT.test(subject))));
     });
   });
+}
+
+// ===== 取りこぼし確認用 =====
+// Gmail にあるのに Supabase に入っていないメールを一覧にする
+function checkMissing() {
+  const props = PropertiesService.getScriptProperties();
+  const url = props.getProperty('SUPABASE_URL');
+  const key = props.getProperty('SUPABASE_KEY');
+  const importFrom = fetchSettings_(url, key).import_from || '1970-01-01';
+  const known = fetchKnownIds_(url, key);
+
+  const threads = GmailApp.search('from:(' + SENDER + ') newer_than:' + SEARCH_DAYS + 'd', 0, MAX_THREADS);
+  var missing = 0;
+  threads.forEach(function (th) {
+    th.getMessages().forEach(function (m) {
+      const subject = m.getSubject() || '';
+      if (!TARGET_SUBJECT.test(subject) || known[m.getId()]) return;
+      const p = parseMail_(m.getPlainBody(), m.getDate(), REFUND_SUBJECT.test(subject));
+      if (p && p.occurredOn >= importFrom) {
+        Logger.log('未登録: ' + p.occurredOn + ' ' + p.store + ' ' + p.amount + '円');
+        missing++;
+      }
+    });
+  });
+  Logger.log('未登録 合計 ' + missing + '件');
 }
