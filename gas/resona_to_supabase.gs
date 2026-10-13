@@ -1,13 +1,15 @@
 /**
  * りそなデビット利用メール → Supabase 取込
- * 家計簿アプリ v3（最終版）
+ * 家計簿アプリ v3.3（LINE通知つき）
  *
  * 【セットアップ】
- *  1. 「プロジェクトの設定」→「スクリプト プロパティ」に4つ登録
- *       SUPABASE_URL    https://xxxxxxxx.supabase.co  （末尾に /rest/v1/ を付けない）
- *       SUPABASE_KEY    Secret key（sb_secret_... で始まるもの）
- *       ERROR_MAIL_TO   エラー通知先メールアドレス
- *       REFRESH_TOKEN   アプリの更新ボタン用の合言葉（自分で決めた文字列）
+ *  1. 「プロジェクトの設定」→「スクリプト プロパティ」に登録
+ *       SUPABASE_URL        https://xxxxxxxx.supabase.co  （末尾に /rest/v1/ を付けない）
+ *       SUPABASE_KEY        Secret key（sb_secret_... で始まるもの）
+ *       ERROR_MAIL_TO       エラー通知先メールアドレス
+ *       REFRESH_TOKEN       アプリの更新ボタン用の合言葉（自分で決めた文字列）
+ *       LINE_CHANNEL_TOKEN  LINEのチャネルアクセストークン（長期）。通知を使うときだけ
+ *     LINE_GROUP_ID は自動で入る（グループで「家計簿を登録」と送ったとき）
  *  2. setup() を一度実行（1時間ごとの自動実行を登録）
  *  3. importResona() を一度実行（取りこぼしていた分をまとめて取り込む）
  *  4. 「デプロイ」→「新しいデプロイ」→ 種類「ウェブアプリ」
@@ -15,6 +17,10 @@
  *       アクセスできるユーザー: 全員
  *     出てきた /exec のURLを、Vercel の環境変数 GAS_REFRESH_URL に登録する。
  *     「全員」にするのは Vercel から呼ぶため。合言葉が一致しない要求は何もしない。
+ *
+ *  5. LINE Developers の Messaging API 設定で、Webhook URL に同じ /exec のURLを入れ、
+ *     「Webhookの利用」をオンにする。グループで「家計簿を登録」と送るとグループが登録される。
+ *     testLine() を実行してテストの通知が届けば完了。
  *
  *  ※ あとでこのコードを書き換えたときは「デプロイを管理」→ 鉛筆 →
  *     バージョン「新バージョン」→ デプロイ。URLは変わらない。
@@ -31,6 +37,8 @@
  *    条件を緩めると使っていない金額が支出として入ってしまう。
  *  ・読み取れなかったメールは1回だけ通知する（毎時同じエラーが届かないように）。
  *  ・1時間ごとの自動実行と更新ボタンが同時に動いても二重にならないよう、ロックをかける。
+ *  ・取込のあとに通知の条件を調べ、新しい通知があればLINEのグループに送る。
+ *    同じ通知は1つの期間（25日〜翌月24日）に1回だけ。夜23時〜朝7時は朝にまとめて送る（設定で変更可）。
  */
 
 // ===== 設定 =====
@@ -76,7 +84,10 @@ function importResona() {
     return { imported: 0, errors: 0 };
   }
   try {
-    return importResona_();
+    const r = importResona_();
+    // 通知は取込とは別に失敗しても、取込の結果は返す
+    try { runAlerts_(); } catch (e) { Logger.log('通知でエラー: ' + e); }
+    return r;
   } finally {
     lock.releaseLock();
   }
@@ -154,6 +165,159 @@ function importResona_() {
 
   Logger.log('取込 ' + rows.length + '件 / エラー ' + errors.length + '件');
   return { imported: rows.length, errors: errors.length };
+}
+
+// ===== 通知 =====
+function runAlerts_() {
+  const props = PropertiesService.getScriptProperties();
+  const url = props.getProperty('SUPABASE_URL');
+  const key = props.getProperty('SUPABASE_KEY');
+
+  // 条件を調べて、新しく満たしたものを alerts に入れる（アプリ内にはこれで出る）
+  rpc_(url, key, 'fn_check_alerts', {});
+
+  const conf = fetchSettings_(url, key);
+  const token = props.getProperty('LINE_CHANNEL_TOKEN');
+  const group = props.getProperty('LINE_GROUP_ID');
+  if (conf.line_enabled === 'false' || !token || !group) return;
+
+  // 夜は送らず、朝7時以降の最初の実行でまとめて送る
+  const hour = Number(Utilities.formatDate(new Date(), 'Asia/Tokyo', 'H'));
+  if (conf.alert_quiet_night !== 'false' && (hour >= 23 || hour < 7)) return;
+
+  const pending = getJson_(url, key, 'alerts?select=id,title,body,created_at&sent_at=is.null&order=id');
+  if (!pending.length) return;
+
+  // 24時間より前の通知は今さら送らない（LINEを設定する前にたまっていた分など）
+  const limit = Date.now() - 24 * 3600 * 1000;
+  const fresh = pending.filter(function (a) { return new Date(a.created_at).getTime() >= limit; });
+  const stale = pending.filter(function (a) { return new Date(a.created_at).getTime() < limit; });
+  if (stale.length) markSent_(url, key, stale.map(function (a) { return a.id; }));
+
+  // LINEは1回に5件まで
+  for (var i = 0; i < fresh.length; i += 5) {
+    const chunk = fresh.slice(i, i + 5);
+    linePush_(token, group, chunk.map(function (a) {
+      return '【家計簿】' + a.title + '\n' + a.body;
+    }));
+    markSent_(url, key, chunk.map(function (a) { return a.id; }));
+  }
+  Logger.log('LINEに ' + fresh.length + ' 件送りました');
+}
+
+function linePush_(token, to, texts) {
+  const res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({
+      to: to,
+      messages: texts.map(function (t) { return { type: 'text', text: t.slice(0, 4900) }; })
+    }),
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) {
+    throw new Error('LINEへの送信に失敗 (' + res.getResponseCode() + '): ' + res.getContentText());
+  }
+}
+
+function lineReply_(replyToken, text) {
+  const token = PropertiesService.getScriptProperties().getProperty('LINE_CHANNEL_TOKEN');
+  if (!token || !replyToken) return;
+  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
+    payload: JSON.stringify({ replyToken: replyToken, messages: [{ type: 'text', text: text }] }),
+    muteHttpExceptions: true
+  });
+}
+
+function markSent_(url, key, ids) {
+  if (!ids.length) return;
+  const res = UrlFetchApp.fetch(url + '/rest/v1/alerts?id=in.(' + ids.join(',') + ')', {
+    method: 'patch',
+    contentType: 'application/json',
+    headers: { apikey: key, Authorization: 'Bearer ' + key, Prefer: 'return=minimal' },
+    payload: JSON.stringify({ sent_at: new Date().toISOString() }),
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error('送信済みにできません: ' + res.getContentText());
+}
+
+// ===== LINEのWebhook（グループの登録）=====
+// グループで「家計簿を登録」と送ると、そのグループを通知先にする。
+// 誰でも呼べるURLなので、登録できるのは「まだ登録されていないとき」だけにしてある。
+function doPost(e) {
+  try {
+    const data = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const props = PropertiesService.getScriptProperties();
+    (data.events || []).forEach(function (ev) {
+      const src = ev.source || {};
+      if (src.type !== 'group') return;
+      const text = (ev.type === 'message' && ev.message && ev.message.type === 'text')
+        ? String(ev.message.text).trim() : '';
+      if (text !== '家計簿を登録') return;
+
+      const current = props.getProperty('LINE_GROUP_ID');
+      if (current && current !== src.groupId) {
+        lineReply_(ev.replyToken, 'すでに別のグループが登録されています。');
+        return;
+      }
+      props.setProperty('LINE_GROUP_ID', src.groupId);
+      setSetting_('line_group', 'registered');
+      lineReply_(ev.replyToken, 'このグループに家計簿の通知を送ります。');
+    });
+  } catch (err) {
+    Logger.log('Webhookの処理でエラー: ' + err);
+  }
+  return ContentService.createTextOutput('ok');
+}
+
+// ===== 動作確認用 =====
+// テストの通知をLINEのグループに送る
+function testLine() {
+  const props = PropertiesService.getScriptProperties();
+  const token = props.getProperty('LINE_CHANNEL_TOKEN');
+  const group = props.getProperty('LINE_GROUP_ID');
+  if (!token) throw new Error('LINE_CHANNEL_TOKEN が未設定です');
+  if (!group) throw new Error('グループが未登録です。グループで「家計簿を登録」と送ってください');
+  linePush_(token, group, ['【家計簿】テストの通知です。\nこれが届けば通知の設定は完了です。']);
+  Logger.log('送りました');
+}
+
+// 通知先のグループを登録し直したいときに実行する
+function resetLineGroup() {
+  PropertiesService.getScriptProperties().deleteProperty('LINE_GROUP_ID');
+  setSetting_('line_group', '');
+  Logger.log('グループの登録を消しました。グループで「家計簿を登録」と送り直してください');
+}
+
+// ===== Supabase の小さな道具 =====
+function rpc_(url, key, fn, args) {
+  const res = UrlFetchApp.fetch(url + '/rest/v1/rpc/' + fn, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { apikey: key, Authorization: 'Bearer ' + key },
+    payload: JSON.stringify(args || {}),
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() >= 300) throw new Error(fn + ' に失敗 (' + res.getResponseCode() + '): ' + res.getContentText());
+  return res.getContentText();
+}
+
+function getJson_(url, key, path) {
+  const res = UrlFetchApp.fetch(url + '/rest/v1/' + path, {
+    headers: { apikey: key, Authorization: 'Bearer ' + key },
+    muteHttpExceptions: true
+  });
+  if (res.getResponseCode() !== 200) throw new Error(path + ' を読めません (' + res.getResponseCode() + ')');
+  return JSON.parse(res.getContentText());
+}
+
+function setSetting_(k, v) {
+  const props = PropertiesService.getScriptProperties();
+  rpc_(props.getProperty('SUPABASE_URL'), props.getProperty('SUPABASE_KEY'), 'fn_set_setting', { k: k, v: v });
 }
 
 // ===== 取り込み済みのメッセージID =====

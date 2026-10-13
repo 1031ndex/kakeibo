@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  ACCOUNT, fetchYearTx, fetchCategories, fetchBalance, fetchAnnualTargets, fetchMoney,
+  ACCOUNT, fetchYearTx, fetchCategories, fetchBalance, fetchAnnualTargets, fetchMoneyAt, cycleEnd, cycleKeyOf,
   generateFixed, removeTx, iso, yen,
   type Tx, type Category, type Money,
 } from '@/lib/db';
@@ -27,15 +27,15 @@ export default function Savings() {
 
   const load = useCallback(async (y: number) => {
     try {
-      // 過去の年はその年末時点、今年以降は今月時点の貯蓄を出す
+      // 過去の年はその年末時点、今年以降は今の期間の締め（24日）時点の貯蓄を出す
       const now = new Date();
-      const asOf = y < now.getFullYear() ? new Date(y, 11, 1) : now;
+      const asOf = y < now.getFullYear() ? new Date(y, 11, 31) : cycleEnd(cycleKeyOf(now));
       await generateFixed(now);
       const [t, it, c, m, inv, tg] = await Promise.all([
         fetchYearTx(ACCOUNT.RESONA, y),
         fetchYearTx(ACCOUNT.INVEST, y),
         fetchCategories(),
-        fetchMoney(asOf),
+        fetchMoneyAt(asOf),
         fetchBalance(ACCOUNT.INVEST),
         fetchAnnualTargets(y),
       ]);

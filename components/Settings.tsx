@@ -16,7 +16,7 @@ const accountLabel = (b: Budget) =>
   b.account_kind === 'invest' ? '運用資産' : b.is_contribution ? '拠出' : '共通りそな';
 
 export default function Settings() {
-  const [tab, setTab] = useState<'budget' | 'fixed' | 'rules' | 'import'>('budget');
+  const [tab, setTab] = useState<'budget' | 'fixed' | 'rules' | 'import' | 'alert'>('budget');
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [fixed, setFixed] = useState<FixedEntry[]>([]);
   const [rules, setRules] = useState<any[]>([]);
@@ -58,6 +58,7 @@ export default function Settings() {
         <button data-on={tab === 'fixed'} onClick={() => setTab('fixed')}>自動計上</button>
         <button data-on={tab === 'rules'} onClick={() => setTab('rules')}>店名ルール</button>
         <button data-on={tab === 'import'} onClick={() => setTab('import')}>取込</button>
+        <button data-on={tab === 'alert'} onClick={() => setTab('alert')}>通知</button>
       </div>
 
       {tab === 'budget' && (
@@ -108,7 +109,9 @@ export default function Settings() {
                   <span className="name">{f.name}</span><br />
                   <span className="sub">
                     {f.frequency === 'monthly' ? '毎月' : `${(f.months ?? []).join('・')}月`}
-                    {f.day_of_month >= 31 ? '末日' : `${f.day_of_month}日`} ・ {f.kind} ・ {f.payer}
+                    {f.day_of_month >= 31 ? '末日' : `${f.day_of_month}日`}
+                    {f.holiday_rule === 'next' && '（休日なら翌営業日）'}
+                    {f.holiday_rule === 'prev' && '（休日なら前営業日）'} ・ {f.kind} ・ {f.payer}
                     {f.valid_from > new Date().toISOString().slice(0, 10) && ` ・ ${monthJa(f.valid_from)}から`}
                   </span>
                 </span>
@@ -178,6 +181,8 @@ export default function Settings() {
           </p>
         </>
       )}
+
+      {tab === 'alert' && <AlertSettings conf={conf} onChanged={load} />}
 
       <div style={{ marginTop: 28 }}>
         <button className="btn btn-ghost" onClick={() => supabase.auth.signOut()}>
@@ -254,6 +259,7 @@ function BudgetSheet({ budget, onClose, onSaved }: {
         </div>
 
         <p className="figure-sub" style={{ marginTop: 8 }}>
+          選んだ月の25日から始まる期間に効きます（10月を選ぶと 10/25〜11/24 から）。
           この月より後に予約されている変更は、この金額で上書きされます。
           自動で記帳される項目（拠出・家賃など）は、記帳される額も一緒に変わります。
         </p>
@@ -277,6 +283,7 @@ function FixedSheet({ entry, onClose, onSaved }: {
   const [name, setName] = useState(entry.name);
   const [amount, setAmount] = useState(String(entry.amount));
   const [day, setDay] = useState(String(entry.day_of_month));
+  const [rule, setRule] = useState<FixedEntry['holiday_rule']>(entry.holiday_rule ?? 'none');
   const [from, setFrom] = useState(entry.valid_from.slice(0, 7) > thisMonth ? entry.valid_from.slice(0, 7) : thisMonth);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -289,6 +296,7 @@ function FixedSheet({ entry, onClose, onSaved }: {
         name,
         amount: Number(amount),
         day_of_month: Number(day),
+        holiday_rule: rule,
       }, fromYm(from));
       onSaved();
     } catch (e: any) {
@@ -327,6 +335,15 @@ function FixedSheet({ entry, onClose, onSaved }: {
         </div>
 
         <div className="field">
+          <label htmlFor="fr">土日・祝日に当たったら</label>
+          <select id="fr" value={rule} onChange={(e) => setRule(e.target.value as FixedEntry['holiday_rule'])}>
+            <option value="none">そのままの日にする</option>
+            <option value="next">翌営業日にずらす（引き落としなど）</option>
+            <option value="prev">前営業日にずらす（給料日など）</option>
+          </select>
+        </div>
+
+        <div className="field">
           <label htmlFor="ff">いつから</label>
           <input id="ff" type="month" min={thisMonth} value={from}
             onChange={(e) => setFrom(e.target.value)} />
@@ -334,6 +351,7 @@ function FixedSheet({ entry, onClose, onSaved }: {
 
         <p className="figure-sub" style={{ marginTop: 8 }}>
           末日を選ぶと、2月は28日、4月は30日のように月ごとに合わせます。
+          祝日は振替休日も含めて自動で判定します。
           この月からの記帳は新しい内容で作り直されます。それより前はそのままです。
         </p>
 
@@ -346,5 +364,93 @@ function FixedSheet({ entry, onClose, onSaved }: {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ---------- 通知の設定 ---------- */
+const NUMBERS: { key: string; label: string; sub: string; unit: string }[] = [
+  { key: 'alert_budget_rate', label: '予算の何%で知らせるか', sub: '変動費の合計がこの割合を超えたら', unit: '%' },
+  { key: 'alert_pace_points', label: 'ペースの警告', sub: '期間の経過より何ポイント早く使ったら', unit: 'ポイント' },
+  { key: 'alert_pace_min_over', label: 'ペースの警告を出す見込み額', sub: 'このままだとこの額以上オーバーするとき', unit: '円' },
+  { key: 'alert_pace_min_days', label: 'ペースの警告を出さない日数', sub: '期間の最初の何日かは出さない（まとめ買いで誤報しないように）', unit: '日' },
+  { key: 'alert_spendable_min', label: '使えるお金の下限', sub: 'この額を切ったら知らせる', unit: '円' },
+  { key: 'alert_deposit_hour', label: '入金のお知らせの時刻', sub: '毎月24日のこの時刻に、明日入れる額を知らせる', unit: '時' },
+];
+
+function AlertSettings({ conf, onChanged }: { conf: Record<string, string>; onChanged: () => void }) {
+  const [vals, setVals] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const v: Record<string, string> = {};
+    for (const n of NUMBERS) v[n.key] = conf[n.key] ?? '';
+    setVals(v);
+  }, [conf]);
+
+  const toggle = async (key: string, on: boolean) => {
+    await setSetting(key, on ? 'true' : 'false');
+    onChanged();
+  };
+  const save = async (key: string) => {
+    if (vals[key] === '' || vals[key] === conf[key]) return;
+    await setSetting(key, String(Number(vals[key])));
+    onChanged();
+  };
+
+  return (
+    <>
+      <p className="eyebrow">通知の送り方</p>
+      <div className="ledger">
+        <label className="switch">
+          <span>
+            <span className="name">通知を使う</span><br />
+            <span className="sub">オフにするとアプリにもLINEにも出なくなります</span>
+          </span>
+          <input type="checkbox" checked={conf.alerts_enabled !== 'false'}
+            onChange={(e) => toggle('alerts_enabled', e.target.checked)} />
+        </label>
+        <label className="switch">
+          <span>
+            <span className="name">LINEにも送る</span><br />
+            <span className="sub">
+              グループ：{conf.line_group === 'registered' ? '登録済み' : '未登録（グループで「家計簿を登録」と送る）'}
+            </span>
+          </span>
+          <input type="checkbox" checked={conf.line_enabled !== 'false'}
+            onChange={(e) => toggle('line_enabled', e.target.checked)} />
+        </label>
+        <label className="switch">
+          <span>
+            <span className="name">夜は朝にまとめて送る</span><br />
+            <span className="sub">23時〜7時の通知は、朝7時以降にLINEへ送ります。アプリにはすぐ出ます</span>
+          </span>
+          <input type="checkbox" checked={conf.alert_quiet_night !== 'false'}
+            onChange={(e) => toggle('alert_quiet_night', e.target.checked)} />
+        </label>
+      </div>
+
+      <p className="eyebrow">通知の基準</p>
+      <div className="ledger">
+        {NUMBERS.map((n) => (
+          <label className="switch" key={n.key}>
+            <span>
+              <span className="name">{n.label}</span><br />
+              <span className="sub">{n.sub}</span>
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+              <input
+                type="number" inputMode="numeric"
+                className="num-input num"
+                value={vals[n.key] ?? ''}
+                onChange={(e) => setVals((v) => ({ ...v, [n.key]: e.target.value }))}
+                onBlur={() => save(n.key)}
+              />
+              <span className="sub">{n.unit}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      <p className="figure-sub" style={{ marginTop: 10 }}>
+        同じ通知は1つの期間（25日〜翌月24日）に1回だけ届きます。基準を変えても、その期間にすでに届いた通知はもう一度は来ません。
+      </p>
+    </>
   );
 }

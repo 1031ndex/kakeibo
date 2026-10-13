@@ -19,7 +19,7 @@ export default function Inbox({ onDone }: { onDone: () => void }) {
       try {
         const [q, c] = await Promise.all([fetchUnclassified(), fetchCategories()]);
         setQueue(q);
-        setCats(c.filter((x) => x.account_id === ACCOUNT.RESONA && x.kind === '支出'));
+        setCats(c.filter((x) => x.account_id === ACCOUNT.RESONA && x.kind === '支出' && !x.is_system));
       } catch (e: any) {
         setError(e.message ?? '読み込めませんでした');
       } finally {

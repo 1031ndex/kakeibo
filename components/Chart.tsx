@@ -2,8 +2,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  ACCOUNT, fetchMonthTx, fetchYearTx, fetchTrend,
-  yen, monthLabel, type Tx,
+  ACCOUNT, fetchRangeTx, fetchYearTx, fetchTrend,
+  cycleStart, cycleEnd, cycleKeyOf, cycleLabel,
+  yen, type Tx,
 } from '@/lib/db';
 
 // 色は共通りそなのカテゴリ数に合わせて用意する
@@ -14,7 +15,8 @@ const COLORS = [
 
 export default function Chart() {
   const [span, setSpan] = useState<'month' | 'year'>('month');
-  const [cursor, setCursor] = useState(() => new Date());
+  // 月表示のときは期間（25日〜翌月24日）の始まりの月を持つ
+  const [cursor, setCursor] = useState(() => cycleKeyOf(new Date()));
   const [txs, setTxs] = useState<Tx[]>([]);
   const [trend, setTrend] = useState<{ month: string; income: number; outgo: number }[]>([]);
   const [error, setError] = useState('');
@@ -23,7 +25,7 @@ export default function Chart() {
     try {
       const [t, tr] = await Promise.all([
         s === 'month'
-          ? fetchMonthTx(ACCOUNT.RESONA, c)
+          ? fetchRangeTx(ACCOUNT.RESONA, cycleStart(c), cycleEnd(c))
           : fetchYearTx(ACCOUNT.RESONA, c.getFullYear()),
         fetchTrend(ACCOUNT.RESONA, 12),
       ]);
@@ -43,7 +45,7 @@ export default function Chart() {
   // カテゴリ別に集計（支出のみ）
   const byCat = new Map<string, number>();
   for (const t of txs) {
-    if (t.type !== '支出') continue;
+    if (t.type !== '支出' || t.categories?.is_system) continue;
     const n = t.categories?.name ?? '未分類';
     byCat.set(n, (byCat.get(n) ?? 0) + t.amount);
   }
@@ -60,7 +62,7 @@ export default function Chart() {
         <div className="month-nav">
           <button onClick={() => shift(-1)} aria-label="前へ">‹</button>
           <span className="month-label num">
-            {span === 'month' ? monthLabel(cursor) : `${cursor.getFullYear()}年`}
+            {span === 'month' ? cycleLabel(cursor) : `${cursor.getFullYear()}年`}
           </span>
           <button onClick={() => shift(1)} aria-label="次へ">›</button>
         </div>
@@ -69,7 +71,7 @@ export default function Chart() {
       {error && <p className="error">{error}</p>}
 
       <div className="seg">
-        <button data-on={span === 'month'} onClick={() => setSpan('month')}>月</button>
+        <button data-on={span === 'month'} onClick={() => { setSpan('month'); setCursor(cycleKeyOf(new Date())); }}>月</button>
         <button data-on={span === 'year'} onClick={() => setSpan('year')}>年</button>
       </div>
 
@@ -104,7 +106,7 @@ export default function Chart() {
         </>
       )}
 
-      <p className="eyebrow">支出の推移（直近12か月）</p>
+      <p className="eyebrow">支出の推移（直近12か月・25日〜翌月24日で集計。数字は締めの月）</p>
       <Trend rows={trend} />
     </>
   );

@@ -11,8 +11,9 @@
 --        ゆうき 157,000（10月のみ）→ 134,000（11月〜。差額23,000はNISAへ）
 --   3. ゆうきのNISA 23,000 を運用資産に追加（11月〜）
 --   4. 誕生日プレゼント（10万円ずつ）
---        りほ→ゆうき（10/31）: 8月の拠出から差し引く。2026年だけ10月
---        ゆうき→りほ（10/3） : 9月の拠出から差し引く。2027年から
+--        りほ→ゆうき（10/31）: りほが9月の拠出から差し引く
+--        ゆうき→りほ（10/3） : ゆうきが8月の拠出から差し引く
+--        2026年分はアプリを始める前に済んでいるので、2027年から
 --   5. 「今月使えるお金」と貯蓄の計算を作り直す
 --
 -- 【毎月の貯蓄額は自動で決まる】
@@ -121,9 +122,8 @@ from (values
   -- NISA（ゆうきの給与口座から。運用資産）
   ('NISA（ゆうき）', 'NISA（ゆうき）', '収入',  23000, 'ゆうき',  1, 'monthly', null::int[], '2026-11-01', null),
   -- 誕生日プレゼント。支払者を本人にすると、その月の拠出から自動で差し引かれる
-  ('誕生日プレゼント（りほ→ゆうき）',      '誕生日プレゼント', '支出', 100000, 'りほ',   25, 'specific_months', array[8],  '2027-01-01', null),
-  ('誕生日プレゼント（ゆうき→りほ）',      '誕生日プレゼント', '支出', 100000, 'ゆうき', 25, 'specific_months', array[9],  '2027-01-01', null),
-  ('誕生日プレゼント（りほ→ゆうき・2026）', '誕生日プレゼント', '支出', 100000, 'りほ',   25, 'specific_months', array[10], '2026-10-01', '2026-10-31')
+  ('誕生日プレゼント（りほ→ゆうき）', '誕生日プレゼント', '支出', 100000, 'りほ',   25, 'specific_months', array[9], '2027-01-01', null),
+  ('誕生日プレゼント（ゆうき→りほ）', '誕生日プレゼント', '支出', 100000, 'ゆうき', 25, 'specific_months', array[8], '2027-01-01', null)
 ) as v(nm, cat, knd, amt, payer, dom, freq, mons, f, t)
 join categories c on c.name = v.cat;
 
@@ -137,7 +137,7 @@ update annual_targets set amount = 82000
 
 insert into annual_targets (year, category_id, amount)
 select v.y, c.id, v.amt
-from (values (2026, 100000), (2027, 200000)) as v(y, amt)
+from (values (2026, 0), (2027, 200000)) as v(y, amt)
 join categories c on c.name = '誕生日プレゼント'
 on conflict (year, category_id) do update set amount = excluded.amount;
 
@@ -322,7 +322,7 @@ union all
 select '11月の貯蓄額', fn_savings_plan(date '2026-11-01'), 77000
 union all
 select '10月 りほが入れる額',
-       (select to_pay from fn_settlement(date '2026-10-01') where user_name = 'りほ'), 92000
+       (select to_pay from fn_settlement(date '2026-10-01') where user_name = 'りほ'), 192000
 union all
 select '10月 ゆうきが入れる額',
        (select to_pay from fn_settlement(date '2026-10-01') where user_name = 'ゆうき'), 157000

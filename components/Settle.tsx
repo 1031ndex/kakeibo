@@ -2,14 +2,14 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import {
-  ACCOUNT, fetchSettlement, fetchMonthTx, yen, monthLabel,
+  ACCOUNT, fetchSettlement, fetchRangeTx, yen, iso,
   type Settlement, type Tx,
 } from '@/lib/db';
 
 /**
- * その月に2人が共通りそなへ入れる額。
- * 本人が払った共通の支出（デビットが使えなかった店の立替・誕生日プレゼント）は
- * その月の拠出から差し引く。
+ * その月の25日に2人が共通りそなへ入れる額。
+ * 前の期間（前月25日〜当月24日）に本人が立て替えた分と、
+ * その月の誕生日プレゼントは、拠出から差し引く。
  */
 export default function Settle({ month, version }: { month: Date; version: number }) {
   const [rows, setRows] = useState<Settlement[]>([]);
@@ -18,12 +18,18 @@ export default function Settle({ month, version }: { month: Date; version: numbe
 
   const load = useCallback(async () => {
     try {
+      const from = new Date(month.getFullYear(), month.getMonth() - 1, 25);
+      const to = new Date(month.getFullYear(), month.getMonth() + 1, 0);
       const [s, t] = await Promise.all([
         fetchSettlement(month),
-        fetchMonthTx(ACCOUNT.RESONA, month),
+        fetchRangeTx(ACCOUNT.RESONA, from, to),
       ]);
+      const ms = iso(new Date(month.getFullYear(), month.getMonth(), 1));
+      const end24 = iso(new Date(month.getFullYear(), month.getMonth(), 24));
       setRows(s);
-      setMinus(t.filter((x) => x.payer !== '共通' && x.type === '支出'));
+      setMinus(t.filter((x) => x.payer !== '共通' && x.type === '支出' && (
+        x.source === 'fixed' ? x.period_month === ms : x.occurred_on <= end24
+      )));
       setError('');
     } catch (e: any) {
       setError(e.message ?? '読み込めませんでした');
@@ -37,7 +43,7 @@ export default function Settle({ month, version }: { month: Date; version: numbe
     <>
       {error && <p className="error">{error}</p>}
 
-      <p className="eyebrow">{monthLabel(month)}に共通りそなへ入れる額</p>
+      <p className="eyebrow">{month.getMonth() + 1}/25に共通りそなへ入れる額</p>
 
       {rows.map((r) => (
         <div className="settle" key={r.user_name}>

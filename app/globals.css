@@ -381,3 +381,58 @@ input, select { font-family: inherit; font-size: 16px; }
   font-size: 13px;
   text-align: left;
 }
+
+/* ---------- 25日区切りの期間 ---------- */
+.cycle-switch {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  font-size: 13px; color: rgba(255,255,255,0.85); margin-bottom: 8px;
+}
+.cycle-switch button {
+  border: none; background: rgba(255,255,255,0.14); color: #fff;
+  width: 28px; height: 28px; border-radius: 14px; font-size: 15px;
+}
+.cycle-switch button:disabled { opacity: 0.3; }
+.cal-day[data-off="true"] { background: #F6F7F4; }
+.cal-day[data-off="true"] .cal-num,
+.cal-day[data-off="true"] .cal-out,
+.cal-day[data-off="true"] .cal-in { opacity: 0.45; }
+.cal-day[data-on="true"] { background: var(--ai-bg); }
+
+/* ---------- 通知 ---------- */
+.top-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.top-actions .refresh { margin-top: 0; }
+.bell {
+  position: relative;
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--rule); background: var(--card); color: var(--ink-2);
+  border-radius: 9px; padding: 9px 12px; font-size: 13px;
+}
+.bell-badge {
+  background: var(--shu); color: #fff; font-size: 10px;
+  min-width: 17px; height: 17px; border-radius: 9px;
+  display: inline-grid; place-items: center; padding: 0 4px;
+}
+.alert-banner {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  width: 100%; margin-top: 10px; text-align: left;
+  background: var(--shu-bg); color: var(--shu);
+  border: 1px solid var(--shu); border-radius: 10px;
+  padding: 11px 13px; font-size: 13px;
+}
+.alert-banner strong { font-weight: 600; }
+.alert-banner-go { margin-left: auto; }
+.alert-item { padding: 12px 14px; border-bottom: 1px solid var(--rule); }
+.alert-item:last-child { border-bottom: none; }
+.alert-item-head { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.alert-item-body { font-size: 13px; color: var(--ink-2); margin-top: 4px; white-space: pre-line; line-height: 1.6; }
+.num-input {
+  width: 84px; text-align: right;
+  border: 1px solid var(--rule); border-radius: 8px; padding: 7px 9px;
+  background: var(--paper); color: var(--ink); font-size: 15px;
+}
+.seg { flex-wrap: nowrap; }
+.seg button { min-width: 0; font-size: 12px; padding: 9px 2px; }
+.alert-item-head .name { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; }
+.alert-item-head .sub { white-space: nowrap; flex-shrink: 0; font-size: 11px; color: var(--ink-3); }
+.switch .name { font-size: 14px; }
+.switch .sub { font-size: 11px; color: var(--ink-3); line-height: 1.5; }

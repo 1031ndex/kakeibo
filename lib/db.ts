@@ -16,6 +16,7 @@ export type Category = {
   is_annual: boolean;          // 年間支出（貯蓄から出る）
   is_contribution: boolean;    // 拠出
   is_savings_income: boolean;  // 貯蓄に入る収入（ボーナス・還付金）
+  is_system: boolean;          // 残高調整など。手入力の選択肢には出さない
   sort_order: number;
 };
 
@@ -31,12 +32,14 @@ export type Tx = {
   memo: string;
   is_refund: boolean;
   source: 'auto' | 'manual' | 'fixed';
+  period_month: string | null;  // 自動計上のとき、どの月の分か
   categories: {
     name: string;
     is_variable: boolean;
     is_annual: boolean;
     is_contribution: boolean;
     is_savings_income: boolean;
+    is_system: boolean;
   } | null;
 };
 
@@ -63,6 +66,7 @@ export type FixedEntry = {
   day_of_month: number;
   frequency: 'monthly' | 'specific_months' | 'yearly';
   months: number[] | null;
+  holiday_rule: 'none' | 'next' | 'prev';
   valid_from: string;
   valid_to: string | null;
 };
@@ -76,15 +80,28 @@ export const monthLabel = (d: Date) => `${d.getFullYear()}年${d.getMonth() + 1}
 export const yen = (n: number) => n.toLocaleString('ja-JP');
 const prevDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1);
 
+/* ---------- 家計の1か月（25日〜翌月24日）----------
+ * 期間は「始まりの月」で呼ぶ。2026年9月の期間 = 9/25〜10/24。
+ * 予算や拠出は、選んだ月の25日から始まる期間に効く。
+ */
+export const cycleStart = (key: Date) => new Date(key.getFullYear(), key.getMonth(), 25);
+export const cycleEnd = (key: Date) => new Date(key.getFullYear(), key.getMonth() + 1, 24);
+export const cycleKeyOf = (d: Date) =>
+  d.getDate() >= 25 ? monthStart(d) : new Date(d.getFullYear(), d.getMonth() - 1, 1);
+export const cycleLabel = (key: Date) => {
+  const s = cycleStart(key), e = cycleEnd(key);
+  return `${s.getMonth() + 1}/${s.getDate()}〜${e.getMonth() + 1}/${e.getDate()}`;
+};
+
 const TX_SELECT =
-  'id,occurred_on,account_id,type,category_id,merchant,amount,payer,memo,is_refund,source,' +
-  'categories(name,is_variable,is_annual,is_contribution,is_savings_income)';
+  'id,occurred_on,account_id,type,category_id,merchant,amount,payer,memo,is_refund,source,period_month,' +
+  'categories(name,is_variable,is_annual,is_contribution,is_savings_income,is_system)';
 
 /* ---------- 取得 ---------- */
 export async function fetchCategories(): Promise<Category[]> {
   const { data, error } = await supabase
     .from('categories')
-    .select('id,name,account_id,kind,is_variable,is_annual,is_contribution,is_savings_income,sort_order')
+    .select('id,name,account_id,kind,is_variable,is_annual,is_contribution,is_savings_income,is_system,sort_order')
     .eq('is_active', true)
     .order('sort_order');
   if (error) throw error;
@@ -98,6 +115,19 @@ export async function fetchMonthTx(accountId: number, month: Date): Promise<Tx[]
     .eq('account_id', accountId)
     .gte('occurred_on', iso(monthStart(month)))
     .lte('occurred_on', iso(monthEnd(month)))
+    .order('occurred_on', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as unknown as Tx[];
+}
+
+/** 日付の範囲で取る（両端を含む） */
+export async function fetchRangeTx(accountId: number, from: Date, to: Date): Promise<Tx[]> {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select(TX_SELECT)
+    .eq('account_id', accountId)
+    .gte('occurred_on', iso(from))
+    .lte('occurred_on', iso(to))
     .order('occurred_on', { ascending: false });
   if (error) throw error;
   return (data ?? []) as unknown as Tx[];
@@ -178,11 +208,47 @@ export type Money = {
   spendable: number;     // 使えるお金
 };
 
-export async function fetchMoney(month: Date): Promise<Money> {
-  const { data, error } = await supabase.rpc('fn_money', { target_month: iso(monthStart(month)) });
+/** 指定日の時点のお金。期間の締め日（24日）を渡すと、その期間の終わりの見込みが出る */
+export async function fetchMoneyAt(day: Date): Promise<Money> {
+  const { data, error } = await supabase.rpc('fn_money_at', { end_date: iso(day) });
   if (error) throw error;
   const row = (data ?? [])[0];
   return row ?? { balance: 0, monthly_plan: 0, saved: 0, used: 0, savings: 0, spendable: 0 };
+}
+
+/** 指定日の終わり時点の共通りそなの残高 */
+export async function fetchBalanceOn(day: Date): Promise<number> {
+  const { data, error } = await supabase.rpc('fn_balance_on', { d: iso(day) });
+  if (error) throw error;
+  return (data ?? 0) as number;
+}
+
+/**
+ * 通帳の残高に合わせる。アプリの残高との差を「残高調整」として記録する。
+ * 取り込めていない入出金や、アプリを始める前のお金をまとめて埋めるためのもの。
+ */
+export async function adjustBalance(actual: number, day: Date): Promise<number> {
+  const current = await fetchBalanceOn(day);
+  const diff = actual - current;
+  if (diff === 0) return 0;
+
+  const { data: cat, error: e0 } = await supabase
+    .from('categories').select('id').eq('name', '残高調整').single();
+  if (e0) throw e0;
+
+  const { error } = await supabase.from('transactions').insert({
+    occurred_on: iso(day),
+    account_id: ACCOUNT.RESONA,
+    type: diff > 0 ? '収入' : '支出',
+    category_id: cat.id,
+    merchant: '通帳の残高に合わせる',
+    amount: Math.abs(diff),
+    payer: '共通',
+    memo: `通帳 ${actual.toLocaleString('ja-JP')} 円 に合わせた`,
+    source: 'manual',
+  });
+  if (error) throw error;
+  return diff;
 }
 
 /* ---------- 記帳 ---------- */
@@ -296,7 +362,7 @@ async function splitFixed(entry: FixedEntry, patch: Partial<FixedEntry>, from: D
 }
 
 const ENTRY_SELECT =
-  'id,name,kind,category_id,amount,payer,day_of_month,frequency,months,valid_from,valid_to';
+  'id,name,kind,category_id,amount,payer,day_of_month,frequency,months,holiday_rule,valid_from,valid_to';
 
 /**
  * 予算の金額を変える。
@@ -342,7 +408,7 @@ export async function changeBudget(categoryId: number, amount: number, from: Dat
 /** 自動計上の名前・金額・計上日を変える。金額を変えたら予算も揃える */
 export async function changeFixed(
   entry: FixedEntry,
-  patch: { name: string; amount: number; day_of_month: number },
+  patch: { name: string; amount: number; day_of_month: number; holiday_rule: FixedEntry['holiday_rule'] },
   from: Date,
 ) {
   await splitFixed(entry, patch, from);
@@ -432,4 +498,49 @@ export async function runImport(): Promise<{ imported: number; errors: number }>
   const data = await res.json().catch(() => ({ ok: false, error: '応答を読み取れません' }));
   if (!data.ok) throw new Error(data.error ?? '取込に失敗しました');
   return { imported: data.imported ?? 0, errors: data.errors ?? 0 };
+}
+
+/* ---------- 通知 ---------- */
+export type Alert = {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  created_at: string;
+  sent_at: string | null;
+  read: boolean;          // 自分が読んだか（既読は2人それぞれ）
+};
+
+/** 今の期間の通知の条件を調べる。新しく満たしたものだけが追加される */
+export async function checkAlerts() {
+  const { error } = await supabase.rpc('fn_check_alerts', {});
+  if (error) throw error;
+}
+
+export async function fetchAlerts(limit = 30): Promise<Alert[]> {
+  const { data: s } = await supabase.auth.getSession();
+  const uid = s.session?.user.id;
+  const { data, error } = await supabase
+    .from('alerts')
+    .select('id,kind,title,body,created_at,sent_at,alert_reads(user_id)')
+    .order('id', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return ((data ?? []) as any[]).map((a) => ({
+    id: a.id, kind: a.kind, title: a.title, body: a.body,
+    created_at: a.created_at, sent_at: a.sent_at,
+    read: (a.alert_reads ?? []).some((r: any) => r.user_id === uid),
+  }));
+}
+
+export async function markAlertsRead(ids: number[]) {
+  if (ids.length === 0) return;
+  const { data: s } = await supabase.auth.getSession();
+  const uid = s.session?.user.id;
+  if (!uid) return;
+  const { error } = await supabase
+    .from('alert_reads')
+    .upsert(ids.map((id) => ({ alert_id: id, user_id: uid })),
+      { onConflict: 'alert_id,user_id', ignoreDuplicates: true });
+  if (error) throw error;
 }
