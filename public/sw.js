@@ -1,7 +1,7 @@
 // 家計簿 — 最小構成の Service Worker
 // アプリの見た目だけキャッシュし、明細データは常にネットワークから取る。
 // （古い残高が表示されると誤解のもとになるため）
-const CACHE = 'kakeibo-v3';
+const CACHE = 'kakeibo-v3.4';
 const SHELL = ['/', '/manifest.json'];
 
 self.addEventListener('install', (e) => {

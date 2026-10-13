@@ -183,12 +183,13 @@ export async function fetchBalance(accountId: number): Promise<number> {
 export async function fetchAnnualTargets(year: number) {
   const { data, error } = await supabase
     .from('annual_targets')
-    .select('year,category_id,amount,categories(name,sort_order)')
+    .select('year,category_id,amount,categories!inner(name,sort_order,is_active)')
+    .eq('categories.is_active', true)
     .lte('year', year)
     .order('year', { ascending: false });
   if (error) throw error;
 
-  type Row = { year: number; category_id: number; amount: number; categories: { name: string; sort_order: number } };
+  type Row = { year: number; category_id: number; amount: number; categories: { name: string; sort_order: number; is_active: boolean } };
   const latest = new Map<number, Row>();
   for (const r of (data ?? []) as unknown as Row[]) {
     if (!latest.has(r.category_id)) latest.set(r.category_id, r);
@@ -408,7 +409,10 @@ export async function changeBudget(categoryId: number, amount: number, from: Dat
 /** 自動計上の名前・金額・計上日を変える。金額を変えたら予算も揃える */
 export async function changeFixed(
   entry: FixedEntry,
-  patch: { name: string; amount: number; day_of_month: number; holiday_rule: FixedEntry['holiday_rule'] },
+  patch: {
+    name: string; amount: number; day_of_month: number; holiday_rule: FixedEntry['holiday_rule'];
+    frequency?: FixedEntry['frequency']; months?: number[] | null;
+  },
   from: Date,
 ) {
   await splitFixed(entry, patch, from);
@@ -421,6 +425,166 @@ export async function changeFixed(
   }
 
   await generateFixed(new Date());
+}
+
+/** 自動計上を新しく作る。選んだ月から記帳が始まる */
+export async function addFixed(input: {
+  name: string; category_id: number; kind: Kind; amount: number; payer: Owner;
+  day_of_month: number; holiday_rule: FixedEntry['holiday_rule'];
+  frequency: 'monthly' | 'specific_months'; months: number[] | null;
+}, from: Date) {
+  const { error } = await supabase.from('fixed_entries').insert({
+    ...input,
+    months: input.frequency === 'monthly' ? null : input.months,
+    valid_from: iso(monthStart(from)),
+    valid_to: null,
+  });
+  if (error) throw error;
+  await generateFixed(new Date());
+}
+
+/**
+ * 自動計上をやめる。選んだ月から記帳しない。
+ * それより前に記帳された分はそのまま残す。
+ */
+export async function stopFixed(entry: FixedEntry, from: Date) {
+  const f = iso(monthStart(from));
+  const { error: e0 } = await supabase
+    .from('transactions').delete().eq('fixed_entry_id', entry.id).gte('period_month', f);
+  if (e0) throw e0;
+  const q = entry.valid_from >= f
+    ? supabase.from('fixed_entries').delete().eq('id', entry.id)
+    : supabase.from('fixed_entries').update({ valid_to: iso(prevDay(monthStart(from))) }).eq('id', entry.id);
+  const { error } = await q;
+  if (error) throw error;
+}
+
+/* ---------- カテゴリの編集 ---------- */
+export type CategoryType = 'variable' | 'fixed' | 'annual' | 'savings_income' | 'invest';
+
+export const CATEGORY_TYPES: { type: CategoryType; label: string; sub: string }[] = [
+  { type: 'variable',       label: '変動費',         sub: 'デビットで日々使うもの。予算のバーとペースの通知に入る' },
+  { type: 'fixed',          label: '固定費',         sub: '毎月決まった支払い。家賃・サブスクなど' },
+  { type: 'annual',         label: '年間支出',       sub: '貯蓄から出すもの。旅行・税金・誕生日など' },
+  { type: 'savings_income', label: '貯蓄に入る収入', sub: 'ボーナス・還付金など' },
+  { type: 'invest',         label: '運用資産',       sub: '給与口座から積み立てるもの。NISAなど' },
+];
+
+export const categoryTypeOf = (c: Pick<Category, 'account_id' | 'kind' | 'is_variable' | 'is_annual' | 'is_savings_income' | 'is_contribution'>):
+  CategoryType | 'contribution' | 'other' => {
+  if (c.account_id === ACCOUNT.INVEST) return 'invest';
+  if (c.is_contribution) return 'contribution';
+  if (c.kind === '収入') return c.is_savings_income ? 'savings_income' : 'other';
+  if (c.is_annual) return 'annual';
+  return c.is_variable ? 'variable' : 'fixed';
+};
+
+/** 名前を変えたり、やめたりすると計算が崩れるカテゴリ */
+export const isLockedCategory = (c: Pick<Category, 'is_contribution' | 'is_system'>) =>
+  c.is_contribution || c.is_system;
+
+const friendly = (e: any) => {
+  const m = String(e?.message ?? '');
+  if (m.includes('duplicate') || m.includes('unique')) return new Error('同じ名前のカテゴリがすでにあります（やめたものも含む）');
+  return e;
+};
+
+/** カテゴリを作る。作ったカテゴリの id を返す */
+export async function addCategory(name: string, type: CategoryType): Promise<number> {
+  const all = await supabase.from('categories').select('sort_order,account_id,kind,is_variable,is_annual,is_savings_income,is_contribution');
+  if (all.error) throw all.error;
+  // 同じ種類の一番うしろに並べる
+  const same = (all.data ?? []).filter((c: any) => categoryTypeOf(c) === type);
+  const pool = same.length ? same : (all.data ?? []);
+  const sort = pool.reduce((m: number, c: any) => Math.max(m, c.sort_order ?? 0), 0) + 1;
+
+  const row = {
+    name: name.trim(),
+    account_id: type === 'invest' ? ACCOUNT.INVEST : ACCOUNT.RESONA,
+    kind: (type === 'savings_income' || type === 'invest' ? '収入' : '支出') as Kind,
+    is_variable: type === 'variable',
+    is_annual: type === 'annual',
+    is_savings_income: type === 'savings_income',
+    sort_order: sort,
+  };
+  const { data, error } = await supabase.from('categories').insert(row).select('id').single();
+  if (error) throw friendly(error);
+  return data.id as number;
+}
+
+export async function renameCategory(id: number, name: string) {
+  const { error } = await supabase.from('categories').update({ name: name.trim() }).eq('id', id);
+  if (error) throw friendly(error);
+}
+
+/** 同じ種類の中で並び順を入れ替える。list は画面に出ている順 */
+export async function moveCategory(list: { id: number; sort_order: number }[], index: number, dir: -1 | 1) {
+  const j = index + dir;
+  if (j < 0 || j >= list.length) return;
+  const order = list.map((c) => c.id);
+  [order[index], order[j]] = [order[j], order[index]];
+  // 元の番号を小さい順に配り直す（重なっていたら1ずつずらす）
+  const nums = list.map((c) => c.sort_order).sort((a, b) => a - b);
+  for (let i = 1; i < nums.length; i++) if (nums[i] <= nums[i - 1]) nums[i] = nums[i - 1] + 1;
+  for (let i = 0; i < order.length; i++) {
+    const before = list.find((c) => c.id === order[i])!;
+    if (before.sort_order === nums[i]) continue;
+    const { error } = await supabase.from('categories').update({ sort_order: nums[i] }).eq('id', order[i]);
+    if (error) throw error;
+  }
+}
+
+/**
+ * カテゴリをやめる。一覧と入力の候補から外す。過去の明細はそのまま残る。
+ * 予算は今の期間から、自動計上は来月の分から止める（すでに記帳された分は残す）。
+ */
+export async function deactivateCategory(id: number) {
+  const now = new Date();
+  const cycle = iso(cycleKeyOf(now));
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+
+  const { data: rows, error: e0 } = await supabase
+    .from('category_budgets').select('id,valid_from,valid_to')
+    .eq('category_id', id).or(`valid_to.is.null,valid_to.gte.${cycle}`);
+  if (e0) throw e0;
+  for (const r of rows ?? []) {
+    const q = r.valid_from >= cycle
+      ? supabase.from('category_budgets').delete().eq('id', r.id)
+      : supabase.from('category_budgets').update({ valid_to: iso(prevDay(cycleKeyOf(now))) }).eq('id', r.id);
+    const { error } = await q;
+    if (error) throw error;
+  }
+
+  const { data: fx, error: e1 } = await supabase
+    .from('fixed_entries').select(ENTRY_SELECT).eq('category_id', id).is('valid_to', null);
+  if (e1) throw e1;
+  for (const f of (fx ?? []) as FixedEntry[]) await stopFixed(f, nextMonth);
+
+  const { error } = await supabase.from('categories').update({ is_active: false }).eq('id', id);
+  if (error) throw error;
+}
+
+/** 年間支出の目安を入れる。later=true なら、翌年以降に入っていた額も消してこの額に揃える */
+export async function setAnnualTarget(categoryId: number, year: number, amount: number, later = true) {
+  const { error } = await supabase
+    .from('annual_targets')
+    .upsert({ year, category_id: categoryId, amount }, { onConflict: 'year,category_id' });
+  if (error) throw error;
+  if (later) {
+    const { error: e2 } = await supabase
+      .from('annual_targets').delete().eq('category_id', categoryId).gt('year', year);
+    if (e2) throw e2;
+  }
+}
+
+/** やめたものも含めた全カテゴリ */
+export async function fetchAllCategories(): Promise<(Category & { is_active: boolean })[]> {
+  const { data, error } = await supabase
+    .from('categories')
+    .select('id,name,account_id,kind,is_variable,is_annual,is_contribution,is_savings_income,is_system,sort_order,is_active')
+    .order('sort_order');
+  if (error) throw error;
+  return data as (Category & { is_active: boolean })[];
 }
 
 export async function fetchFixedEntries(): Promise<FixedEntry[]> {

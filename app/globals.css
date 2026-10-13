@@ -436,3 +436,30 @@ input, select { font-family: inherit; font-size: 16px; }
 .alert-item-head .sub { white-space: nowrap; flex-shrink: 0; font-size: 11px; color: var(--ink-3); }
 .switch .name { font-size: 14px; }
 .switch .sub { font-size: 11px; color: var(--ink-3); line-height: 1.5; }
+
+/* v3.4 カテゴリ・自動計上・年間支出の編集 */
+.order-btns { display: flex; gap: 4px; flex-shrink: 0; }
+.order-btns button {
+  width: 34px; height: 34px; border: 1px solid var(--rule); border-radius: 8px;
+  background: none; color: var(--ink-2); font-size: 11px;
+}
+.order-btns button:disabled { opacity: 0.3; }
+.month-pick { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; margin-top: 8px; }
+.month-pick button {
+  padding: 9px 0; border: 1px solid var(--rule); border-radius: 8px; background: none;
+  color: var(--ink-2); font-size: 13px;
+}
+.month-pick button[data-on="true"] { background: var(--ai); border-color: var(--ai); color: #fff; }
+.type-pick { display: flex; flex-direction: column; gap: 6px; }
+.type-pick button {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 10px 12px; border: 1px solid var(--rule); border-radius: 10px; background: none; color: inherit;
+}
+.type-pick button .name { font-size: 14px; }
+.type-pick button .sub { font-size: 11px; color: var(--ink-3); }
+.type-pick button[data-on="true"] { border-color: var(--ai); box-shadow: inset 0 0 0 1px var(--ai); }
+.eyebrow-row { display: flex; justify-content: space-between; align-items: baseline; }
+.eyebrow-row button { border: none; background: none; color: var(--ai); font-size: 13px; padding: 4px; }
+.list-row:has(.order-btns) { align-items: center; }
+.seg button { white-space: nowrap; letter-spacing: -0.02em; }
+@media (max-width: 400px) { .seg button { font-size: 11px; } }
